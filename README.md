@@ -70,7 +70,7 @@ The human decides **what is being forged**.
 
 ---
 
-<img src="assets/draupnir-forge-cycle.png" alt="How Draupnir Forge Works: recursive Mythic Engineering development cycle" width="100%">
+![draupnir-forge-cycle.png](draupnir-forge-cycle.png)
 
 ## 🔁 How Draupnir Forge Works
 
@@ -114,7 +114,7 @@ flowchart LR
 
 ---
 
-<img src="assets/inside-the-forge.png" alt="Inside the Forge: role-based AI orchestration" width="100%">
+![inside-the-forge.png](inside-the-forge.png)
 
 ## 🧠 Inside the Forge
 
@@ -154,7 +154,7 @@ Watches system health, repeated failures, runaway loops, token budgets, tool fai
 
 ---
 
-<img src="assets/black-box-glass-box.png" alt="Black-Box by Default. Glass-Box on Demand." width="100%">
+![black-box-glass-box.png](black-box-glass-box.png)
 
 ## 🖤 Black-Box by Default. Glass-Box on Demand.
 
@@ -874,7 +874,7 @@ This repository is intended to preserve the architecture, philosophy, visual ide
 
 See:
 
-**[`DRAUPNIR_FORGE_SPEC.md`](DRAUPNIR_FORGE_SPEC.md)**
+![DRAUPNIR_FORGE_SPEC.md](DRAUPNIR_FORGE_SPEC.md)
 
 for the deeper project specification.
 
@@ -886,10 +886,10 @@ for the deeper project specification.
 
 Proposed license:
 
-**GNU Affero General Public License v3.0 or later**
+**GNU Affero General Public License v3.0**
 
 ```text
-SPDX-License-Identifier: AGPL-3.0-or-later
+SPDX-License-Identifier: AGPL-3.0
 ```
 
 The intention is to keep improvements to the Forge open even when modified versions are operated as network services.
