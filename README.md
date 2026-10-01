@@ -880,6 +880,10 @@ for the deeper project specification.
 
 ---
 
+![GNU_Affero_OS_License1.png](GNU_Affero_OS_License1.png)
+
+---
+
 ## 🪪 License
 
 ### Software
