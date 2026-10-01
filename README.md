@@ -888,7 +888,7 @@ for the deeper project specification.
 
 ### Software
 
-Proposed license:
+License:
 
 **GNU Affero General Public License v3.0**
 
@@ -907,6 +907,10 @@ CC BY-SA 4.0
 ```
 
 The generated project artwork should be included only under terms compatible with the actual rights held by the repository owner.
+
+---
+
+![HuggingFace_RuneForgeAI1-Sept-20-2026.png](HuggingFace_RuneForgeAI1-Sept-20-2026.png)
 
 ---
 
