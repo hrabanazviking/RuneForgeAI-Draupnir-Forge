@@ -874,7 +874,7 @@ This repository is intended to preserve the architecture, philosophy, visual ide
 
 See:
 
-![DRAUPNIR_FORGE_SPEC.md](DRAUPNIR_FORGE_SPEC.md)
+[DRAUPNIR_FORGE_SPEC.md](DRAUPNIR_FORGE_SPEC.md)
 
 for the deeper project specification.
 
