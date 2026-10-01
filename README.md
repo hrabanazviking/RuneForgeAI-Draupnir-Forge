@@ -1,4 +1,3 @@
----
 
 ![draupnir-forge-hero.png](draupnir-forge-hero.png)
 
