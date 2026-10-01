@@ -952,7 +952,7 @@ Grounded in the values of the ancient **Old Ways**, RuneForgeAI champions a **ph
 
 ---
 
-![IMG_0407.jpeg](IMG_0407.jpeg)
+![IMG_0407-RuneForgeAI.jpeg](IMG_0407-RuneForgeAI.jpeg)
 
 ---
 
