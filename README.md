@@ -1,6 +1,6 @@
-<div align="center">
+---
 
-<img src="assets/draupnir-forge-hero.png" alt="RuneForgeAI - Draupnir Forge: One intent. A thousand hammer blows. One coherent system." width="100%">
+![draupnir-forge-hero.png](draupnir-forge-hero.png)
 
 # RuneForgeAI - Draupnir Forge
 
