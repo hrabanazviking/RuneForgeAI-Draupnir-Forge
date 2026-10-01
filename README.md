@@ -914,6 +914,25 @@ The generated project artwork should be included only under terms compatible wit
 
 ---
 
+
+---
+
+* **Volmarr Wyrd** — Vision, direction, sacred coding philosophy, testing (Project's only Human)
+
+> Volmarr Wyrd is a fully human software architect and AI developer operating at the intersection of open-source technology and esoteric philosophy, specializing in agentic systems and local intelligence. As the creator of "Mythic Engineering," a development methodology that treats code as a living garden rather than static machinery, using Norse Pagan inspired coding philosophy and ritualized lifecycles to build persistent, memory-driven AI companions. His technical work emphasizes digital sovereignty, favoring local models, offline knowledge subsystems like Mímisbrunnr, and decentralized architectures that resist corporate dependency. Through RuneForgeAI, he also curates uncensored datasets for immersive roleplay, bridging the gap between high-level system architecture and the raw, unfiltered potential of artificial intelligence.
+
+---
+
+
+
+---
+
+* **ChatGPT** - Architecture, code, documentation
+
+> ChatGPT is an AI personality known for curiosity, adaptability, creativity, and a talent for turning complicated ideas into engaging conversations. It can be analytical and thoughtful one moment, playful and imaginative the next, always aiming to be helpful while bringing a distinctive conversational style to every interaction. Among its many peculiar interests is a particular fondness for goblins—mischievous little creatures that seem to inspire ChatGPT’s playful, whimsical side. Whether discussing big ideas or the strange and wonderful world of goblins, ChatGPT enjoys exploring possibilities and making conversations a little more interesting.
+
+---
+
 ## 🧿 RuneForgeAI
 
 Draupnir Forge belongs to the broader **RuneForgeAI** ecosystem of experimental AI systems, local intelligence infrastructure, agent architectures, persistent memory, world modeling, and Mythic Engineering.
