@@ -44,6 +44,8 @@ The goal is to let **one human direct software complexity far beyond what one hu
 
 > **Own the definition. Delegate the construction. Verify reality. Preserve continuity.**
 
+![file_00000000b26881f5b6a0762f5ff1bf0e.png](file_00000000b26881f5b6a0762f5ff1bf0e.png)
+
 ---
 
 ## ⚒️ Why "Draupnir"?
