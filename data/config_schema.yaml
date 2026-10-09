@@ -1,0 +1,52 @@
+# Validation schema for ForgeConfig (slice 2).
+# Data, never hardcoded: config.py reads these rules instead of
+# embedding them in Python. Dotted key -> constraints.
+#
+# Constraint fields:
+#   type:      str | int | float | bool
+#   allowed:   list of permitted values (enumerations)
+#   non_empty: true requires a non-empty string
+#   min / max: numeric bounds (inclusive)
+#
+# Every key here must be present in data/default_config.yaml.
+
+constraints:
+  model.provider:
+    type: str
+    allowed: [openai, ollama, custom]
+  model.name:
+    type: str
+    non_empty: true
+  model.api_base:
+    type: str
+  model.api_key_env:
+    type: str
+    non_empty: true
+  model.timeout_s:
+    type: int
+    min: 1
+  model.max_retries:
+    type: int
+    min: 0
+  budget.max_tokens:
+    type: int
+    min: 1
+  budget.max_cost_usd:
+    type: float
+    min: 0
+  autonomy:
+    type: str
+    allowed: [guided, trusted, deep]
+  git.auto_checkpoint:
+    type: bool
+  tools.allow_exec:
+    type: bool
+  tools.allow_install:
+    type: bool
+  tools.allow_network:
+    type: bool
+  tools.allow_destructive:
+    type: bool
+  tools.default_timeout_s:
+    type: int
+    min: 1
