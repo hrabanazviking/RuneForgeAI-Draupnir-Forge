@@ -1,0 +1,63 @@
+# no_ask_needed.yaml — things the Forge NEVER asks the human about (slice 27).
+#
+# Data for the human escalation engine (src/draupnir_forge/escalation.py).
+# These are the "should NOT ask" cases from DRAUPNIR_FORGE_SPEC.md §13:
+# routine next steps the Forge may take without human permission.
+#
+# Each entry carries keyword patterns. A task whose title or goal mentions
+# one of the patterns is classified as routine and never escalated.
+# RULES.AI.md: data lives in data files, never hardcoded in Python.
+
+negative_list:
+  - name: continue_next
+    description: >-
+      Whether the Forge may continue to the next roadmap item.
+      The roadmap is the standing authorization; advancing it is routine.
+    patterns:
+      - continue to next
+      - next task
+      - next roadmap
+      - proceed to next
+      - advance roadmap
+
+  - name: fix_own_test_failure
+    description: >-
+      Whether the Forge may fix an obvious test failure caused by its own
+      change. Repairing one's own breakage is routine hygiene.
+    patterns:
+      - test failure
+      - failing test
+      - broken test
+      - fix the test
+
+  - name: update_docs
+    description: >-
+      Whether the Forge may update documentation after changing
+      architecture. Docs follow code; keeping them in sync is routine.
+    patterns:
+      - update documentation
+      - update docs
+      - sync docs
+      - document the change
+
+  - name: inspect_files
+    description: >-
+      Whether the Forge may inspect files necessary to complete an
+      already authorized task. Reading is not doing.
+    patterns:
+      - inspect file
+      - read file
+      - examine file
+      - look at the code
+      - explore the repo
+
+  - name: run_verification
+    description: >-
+      Whether the Forge should perform verification that is already part
+      of the workflow. Built-in checks need no permission.
+    patterns:
+      - run verification
+      - run the tests
+      - run test suite
+      - verify the build
+      - smoke test
