@@ -1,19 +1,31 @@
-"""models.py — Model router (slice 23).
+"""models.py — Model router (slices 23 + 44).
 
 Muninn carries the question to the right mind and brings the answer
 back. :class:`ModelRouter` speaks to any OpenAI-compatible chat API
-using only the stdlib ``urllib.request`` — no extra dependencies. The
-provider (``openai`` | ``ollama`` | ``custom``) comes from the Forge
-config; per-role model preferences and fallback chains come from
-``data/role_models.yaml`` (data, never hardcoded).
+using only the stdlib ``urllib.request`` — no extra dependencies.
 
-A call tries each model in ``[primary, *fallbacks]``; each model gets up
-to two attempts with backoff between them. HTTP 5xx and network errors
-move on to the next model; HTTP 4xx and malformed responses raise
-:class:`ModelError` immediately. Usage is recorded to the :class:`Budget`
-via ``budget.charge`` — estimated at ``len(text)//4`` when the API
-returns no usage block. A missing API key raises :class:`ModelError`
-with a clear message rather than crashing silently.
+Slice 23 built the single-provider router: the provider (``openai`` |
+``ollama`` | ``custom``) comes from the Forge config, per-role model
+preferences and fallback chains come from ``data/role_models.yaml``
+(data, never hardcoded), and usage is recorded to the :class:`Budget`.
+
+Slice 44 adds multi-provider failover. The provider registry below
+knows the three providers (``openai`` default, ``ollama`` local,
+``custom`` for any OpenAI-compatible base URL); every provider speaks
+the same ``/chat/completions`` shape, so request building is shared and
+model names travel unchanged across failover. The failover order comes
+from the config's ``model.fallback_providers`` list: when a provider is
+exhausted by repeated HTTP 5xx / network failures, the router tries the
+next provider in the list.
+
+A call tries each provider in ``[primary, *fallbacks]``; on each
+provider it tries each model in ``[primary, *fallbacks]`` with up to
+two attempts and backoff between them. HTTP 5xx and network errors
+move on; HTTP 4xx and malformed responses raise :class:`ModelError`
+immediately. Usage is charged to the budget — estimated at
+``len(text)//4`` when the API returns no usage block. A missing API
+key raises :class:`ModelError` with a clear message rather than
+crashing silently.
 """
 
 from __future__ import annotations
@@ -33,8 +45,6 @@ log = logging.getLogger("draupnir_forge.models")
 
 ROLE_MODELS_FILE = "role_models.yaml"
 
-_OPENAI_API_BASE = "https://api.openai.com/v1"
-_OLLAMA_API_BASE = "http://localhost:11434/v1"
 _CHAT_COMPLETIONS_PATH = "/chat/completions"
 
 
@@ -47,47 +57,80 @@ class _RetryableError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Provider resolution
+# Provider registry (slice 44)
 # ---------------------------------------------------------------------------
+# Every registered provider speaks the OpenAI-compatible chat-completions
+# API; what differs is the default base URL and the key policy.
+# ``model.api_base`` always overrides the default, so a custom Ollama
+# port or an OpenAI proxy needs no code change. The registry is closed
+# on purpose: adding a provider means adding one entry here.
+#
+# ``auth``: "required" (missing key is a ModelError), "optional" (send
+# the key when the env var is set), "never" (no Authorization header).
+_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "openai": {
+        "default_base": "https://api.openai.com/v1",
+        "auth": "required",
+        "needs_base": False,
+    },
+    "ollama": {
+        "default_base": "http://localhost:11434/v1",
+        "auth": "never",
+        "needs_base": False,
+    },
+    "custom": {
+        "default_base": "",
+        "auth": "optional",
+        "needs_base": True,
+    },
+}
 
 
-def _resolve_provider(config: Any) -> Tuple[str, Optional[str]]:
-    """Return ``(api_base, api_key)`` for the configured provider.
+def available_providers() -> List[str]:
+    """Names of every provider in the registry, sorted."""
+    return sorted(_PROVIDERS)
+
+
+def _resolve_provider(
+    config: Any, provider: Optional[str] = None
+) -> Tuple[str, str, Optional[str]]:
+    """Return ``(provider_name, api_base, api_key)`` for a provider.
+
+    Args:
+        config: A :class:`ForgeConfig` (``model.api_base``,
+            ``model.api_key_env``).
+        provider: Provider name; defaults to ``model.provider``.
 
     Raises:
         ModelError: On an unknown provider, a ``custom`` provider with no
-            ``api_base``, or an ``openai`` provider whose key env var is
-            unset. Clear messages, never a silent crash.
+            ``model.api_base``, or a key-demanding provider whose key env
+            var is unset. Clear messages, never a silent crash.
     """
-    provider = str(config.get("model.provider", "openai"))
+    name = str(provider if provider is not None else config.get("model.provider", "openai"))
+    spec = _PROVIDERS.get(name)
+    if spec is None:
+        raise ModelError(
+            f"Unknown model provider {name!r}; expected one of "
+            f"{available_providers()}."
+        )
     api_base = str(config.get("model.api_base", "") or "").rstrip("/")
     key_env = str(config.get("model.api_key_env", "") or "")
+    key = os.environ.get(key_env) if key_env else None
 
-    def _key_from_env() -> Optional[str]:
-        return os.environ.get(key_env) if key_env else None
-
-    if provider == "openai":
-        key = _key_from_env()
-        if not key:
-            raise ModelError(
-                "Model provider 'openai' needs an API key: environment "
-                f"variable {key_env!r} is not set. Export it or switch "
-                "model.provider to 'ollama' or 'custom'."
-            )
-        return api_base or _OPENAI_API_BASE, key
-    if provider == "ollama":
-        return api_base or _OLLAMA_API_BASE, None
-    if provider == "custom":
-        if not api_base:
-            raise ModelError(
-                "Model provider 'custom' needs model.api_base set to the "
-                "OpenAI-compatible base URL (e.g. http://host:port/v1)."
-            )
-        return api_base, _key_from_env()
-    raise ModelError(
-        f"Unknown model provider {provider!r}; expected one of "
-        "openai | ollama | custom."
-    )
+    base = api_base or str(spec["default_base"])
+    if spec["needs_base"] and not base:
+        raise ModelError(
+            f"Model provider {name!r} needs model.api_base set to the "
+            "OpenAI-compatible base URL (e.g. http://host:port/v1)."
+        )
+    if spec["auth"] == "required" and not key:
+        raise ModelError(
+            f"Model provider {name!r} needs an API key: environment "
+            f"variable {key_env!r} is not set. Export it or switch "
+            "model.provider to 'ollama' or 'custom'."
+        )
+    # "never" providers (ollama) send no Authorization header at all.
+    return name, base, key if spec["auth"] != "never" else None
 
 
 # ---------------------------------------------------------------------------
@@ -99,23 +142,46 @@ class ModelRouter:
     """Routes role-scoped chat calls to OpenAI-compatible model APIs.
 
     Args:
-        config: A :class:`ForgeConfig` (model.provider, model.api_base,
-            model.api_key_env, model.timeout_s).
+        config: A :class:`ForgeConfig` (model.provider,
+            model.fallback_providers, model.api_base, model.api_key_env,
+            model.timeout_s).
         budget: The :class:`Budget` to charge token usage against.
+
+    Attributes:
+        provider: The primary provider name from ``model.provider``.
     """
 
     def __init__(self, config: Any, budget: Budget) -> None:
         self.config = config
         self.budget = budget
+        self.provider = str(config.get("model.provider", "openai"))
+        raw_fallbacks = config.get("model.fallback_providers", []) or []
+        self._fallback_providers = [
+            name for name in (str(p).strip() for p in raw_fallbacks) if name
+        ]
         self._role_models: Dict[str, Any] = self._load_role_models()
         retry = self._role_models.get("retry", {}) or {}
         self._attempts_per_model = int(retry.get("attempts_per_model", 2) or 2)
         raw_backoff = retry.get("backoff_seconds", [1.0]) or [1.0]
         self._backoffs = [float(b) for b in raw_backoff]
         self._timeout_s = float(config.get("model.timeout_s", 120))
-        self._api_base, self._api_key = _resolve_provider(config)
+        # Eager validation: a misconfigured primary provider fails here
+        # with a clear error instead of mid-run.
+        _resolve_provider(config, self.provider)
         # Swappable in tests to avoid real sleeping.
         self._sleep = time.sleep
+
+    def provider_chain(self) -> List[str]:
+        """Ordered provider names tried by :meth:`complete`.
+
+        The primary provider first, then ``model.fallback_providers``
+        with duplicates removed (the primary is never retried).
+        """
+        chain = [self.provider]
+        for name in self._fallback_providers:
+            if name not in chain:
+                chain.append(name)
+        return chain
 
     # -- data ------------------------------------------------------------
     @staticmethod
@@ -140,8 +206,11 @@ class ModelRouter:
     def model_for_role(self, role: str) -> Tuple[str, List[str]]:
         """Return ``(primary_model, fallbacks)`` for *role*.
 
-        Unknown roles fall back to the ``default`` entry; malformed
-        entries degrade to the built-in default model.
+        Model names are provider-agnostic on purpose: every registered
+        provider speaks the OpenAI-compatible API, so the same names
+        travel with the call when the router fails over to the next
+        provider (slice 44). Unknown roles fall back to the ``default``
+        entry; malformed entries degrade to the built-in default model.
         """
         roles = self._role_models.get("roles", {}) or {}
         entry = roles.get(role)
@@ -164,10 +233,12 @@ class ModelRouter:
     ) -> str:
         """Complete a chat conversation for *role*.
 
-        Picks the role's model (plus fallbacks) from
-        ``data/role_models.yaml``, posts to
-        ``{api_base}/chat/completions``, retries each model up to twice
-        with backoff, and charges the budget for usage.
+        Walks the provider chain from :meth:`provider_chain`: on each
+        provider the role's model (plus fallbacks, with per-provider
+        name tables when defined) is tried with retries and backoff.
+        When a provider is exhausted by repeated HTTP 5xx / network
+        failures, the router fails over to the next provider in
+        ``model.fallback_providers``. Usage is charged to the budget.
 
         Args:
             messages: OpenAI-style ``[{"role": ..., "content": ...}]``.
@@ -178,49 +249,90 @@ class ModelRouter:
             The assistant's message content.
 
         Raises:
-            ModelError: When every model and fallback fails, when the
-                provider returns HTTP 4xx, or when the response is
+            ModelError: When every provider and model fails, when any
+                provider returns HTTP 4xx, or when a response is
                 malformed.
             BudgetExhausted: When charging the usage would blow a cap.
         """
-        model, fallbacks = self.model_for_role(role)
+        chain = self.provider_chain()
         last_error: Optional[Exception] = None
-        for attempt_model in [model] + fallbacks:
-            for attempt in range(self._attempts_per_model):
-                try:
-                    content, in_tok, out_tok = self._post(
-                        attempt_model, messages, max_tokens
-                    )
-                except _RetryableError as exc:
-                    last_error = exc
-                    log.warning(
-                        "Model %s attempt %d failed (%s); %s",
-                        attempt_model,
-                        attempt + 1,
-                        exc,
-                        "backing off"
-                        if attempt < self._attempts_per_model - 1
-                        else "trying next model",
-                    )
-                    if attempt < self._attempts_per_model - 1:
-                        index = min(attempt, len(self._backoffs) - 1)
-                        self._sleep(self._backoffs[index])
-                    continue
-                self._charge(attempt_model, in_tok, out_tok)
-                return content
+        for position, provider in enumerate(chain):
+            try:
+                _, api_base, api_key = _resolve_provider(
+                    self.config, provider
+                )
+            except ModelError as exc:
+                raise ModelError(
+                    f"Cannot use model provider {provider!r}: {exc}"
+                ) from exc
+            model, fallbacks = self.model_for_role(role)
+            if position > 0:
+                log.warning(
+                    "Model router failing over to provider %r "
+                    "(model %r) after repeated failures",
+                    provider,
+                    model,
+                )
+            models = [model] + fallbacks
+            for attempt_model in models:
+                for attempt in range(self._attempts_per_model):
+                    try:
+                        content, in_tok, out_tok = self._post(
+                            api_base,
+                            api_key,
+                            attempt_model,
+                            messages,
+                            max_tokens,
+                        )
+                    except _RetryableError as exc:
+                        last_error = exc
+                        if attempt < self._attempts_per_model - 1:
+                            next_step = "backing off"
+                        elif attempt_model != models[-1]:
+                            next_step = "trying next model"
+                        elif position < len(chain) - 1:
+                            next_step = "trying next provider"
+                        else:
+                            next_step = "giving up"
+                        log.warning(
+                            "Provider %r model %s attempt %d failed (%s); %s",
+                            provider,
+                            attempt_model,
+                            attempt + 1,
+                            exc,
+                            next_step,
+                        )
+                        if attempt < self._attempts_per_model - 1:
+                            index = min(attempt, len(self._backoffs) - 1)
+                            self._sleep(self._backoffs[index])
+                        continue
+                    self._charge(attempt_model, in_tok, out_tok)
+                    if position > 0:
+                        log.warning(
+                            "Model router now serving from provider %r",
+                            provider,
+                        )
+                    return content
         raise ModelError(
-            f"All models exhausted for role {role!r} "
-            f"(tried {[model] + fallbacks}): {last_error}"
+            f"All providers exhausted for role {role!r} "
+            f"(providers tried: {chain}): {last_error}"
         )
 
     # -- HTTP ------------------------------------------------------------
     def _post(
         self,
+        api_base: str,
+        api_key: Optional[str],
         model: str,
         messages: List[Dict[str, str]],
         max_tokens: int,
     ) -> Tuple[str, int, int]:
         """POST one chat completion; return ``(content, in_tok, out_tok)``.
+
+        All registered providers speak the OpenAI-compatible
+        ``/chat/completions`` shape, so request building is shared: the
+        only per-provider differences are the base URL and whether an
+        ``Authorization`` header is sent.
 
         Raises:
             _RetryableError: HTTP 5xx or network-level failure.
@@ -236,10 +348,10 @@ class ModelRouter:
             "Content-Type": "application/json",
             "User-Agent": "draupnir-forge/0.1",
         }
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         request = urllib.request.Request(
-            self._api_base + _CHAT_COMPLETIONS_PATH,
+            api_base + _CHAT_COMPLETIONS_PATH,
             data=body,
             headers=headers,
             method="POST",
@@ -306,4 +418,4 @@ class ModelRouter:
             log.warning("Could not charge model usage: %s", exc)
 
 
-__all__ = ["ModelError", "ModelRouter"]
+__all__ = ["ModelError", "ModelRouter", "available_providers"]

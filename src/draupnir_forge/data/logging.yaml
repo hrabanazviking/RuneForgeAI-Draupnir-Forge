@@ -1,0 +1,20 @@
+# Logging settings for Draupnir Forge (slice 3).
+# Data, never hardcoded: log.py reads these instead of embedding them.
+# Format matches SURGE_50_SLICE_ROADMAP.md slice 3 exactly:
+#   %(asctime)s [%(levelname)s] %(name)s: %(message)s
+# When a role is bound (bind_role), "[<role>]" is shown after the name.
+
+format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+date_format: "%Y-%m-%d %H:%M:%S"
+
+# Console (stderr) handler levels.
+console_level: WARNING
+verbose_level: DEBUG
+
+# Rotating file handler (<project>/.mythis/logs/forge.log).
+file_level: DEBUG
+log_subdir: ".mythis/logs"
+log_filename: "forge.log"
+rotation:
+  max_bytes: 1048576
+  backup_count: 3

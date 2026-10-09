@@ -1,0 +1,40 @@
+# Canonical .mythis/ skeleton documents for slice 26 (ProjectMemory).
+#
+# Data, never hardcoded: ensure_skeleton() seeds each missing document
+# from this list — a "# <title>" header plus its one-line description.
+# PROJECT_STATE.json is seeded as machine JSON instead (see memory.py).
+
+documents:
+  - name: SYSTEM_VISION.md
+    title: System Vision
+    description: The Skald's reading of intent — what the forge is building and why.
+  - name: ARCHITECTURE.md
+    title: Architecture
+    description: The Architect's map of components, domains, and their bonds.
+  - name: DOMAIN_MAP.md
+    title: Domain Map
+    description: The Cartographer's survey of the repository's territories.
+  - name: INTERFACES.md
+    title: Interfaces
+    description: Public API surfaces and the covenants they keep.
+  - name: INVARIANTS.md
+    title: Invariants
+    description: Laws of the forge that must never be broken.
+  - name: CONSTRAINTS.md
+    title: Constraints
+    description: Limits the work must honor — budget, scope, and policy.
+  - name: ROADMAP.md
+    title: Roadmap
+    description: The human-readable telling of the task graph's saga.
+  - name: DECISIONS.md
+    title: Decisions
+    description: The council's recorded judgments and their reasons.
+  - name: KNOWN_ISSUES.md
+    title: Known Issues
+    description: Wounds the forge knows about and has not yet healed.
+  - name: CAPABILITY_LEDGER.md
+    title: Capability Ledger
+    description: What the forge can do today, and what it is learning.
+  - name: PROJECT_STATE.json
+    title: Project State
+    description: The machine-readable heart of the project (managed by state.py).

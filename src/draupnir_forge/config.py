@@ -214,6 +214,21 @@ def _coerce(value: Any, type_name: str, key: str) -> Any:
             except ValueError:
                 pass
         raise ValueError(f"{location} must be a number, got {value!r}.")
+    if type_name == "list":
+        # Stringly sources (env vars) carry lists as comma-separated text.
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",")]
+            value = [part for part in value if part]
+        if not isinstance(value, list):
+            raise ValueError(
+                f"{location} must be a list, got {type(value).__name__}."
+            )
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"{location} items must be strings, got {item!r}."
+                )
+        return value
     raise ValueError(f"{location}: unknown schema type {type_name!r}.")
 
 
@@ -243,7 +258,17 @@ def _validate(merged: Dict[str, Any], schema: Mapping[str, Any]) -> None:
             )
         coerced = _coerce(node[parts[-1]], str(rules.get("type", "str")), dotted_key)
         allowed = rules.get("allowed")
-        if allowed is not None and coerced not in allowed:
+        allowed_items = rules.get("allowed_items")
+        if allowed_items is not None:
+            # List-typed keys: each item must be permitted.
+            bad = [item for item in coerced if item not in allowed_items]
+            if bad:
+                raise ValueError(
+                    f"Config error: {dotted_key!r} has disallowed items "
+                    f"{bad}; each item must be one of "
+                    f"{list(allowed_items)}."
+                )
+        elif allowed is not None and coerced not in allowed:
             raise ValueError(
                 f"Config error: {dotted_key!r} must be one of "
                 f"{list(allowed)}, got {coerced!r}."

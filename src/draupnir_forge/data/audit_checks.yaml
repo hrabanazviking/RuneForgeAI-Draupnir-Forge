@@ -1,0 +1,87 @@
+# audit_checks.yaml — Auditor check definitions (slice 15).
+#
+# The Auditor reads this file for every check's settings: severities,
+# regexes, thresholds. Python in roles/auditor.py implements the checks;
+# this file only tunes them. If the file is missing or unreadable the
+# Auditor falls back to built-in defaults and keeps working.
+#
+# Architecture drift (check 7) needs an `architecture.json` at the project
+# root with this shape:
+#
+#   {
+#     "domains": {
+#       "<domain-name>": {
+#         "paths":   ["src/draupnir_forge/roles/"],   # dir prefixes, relative
+#         "modules": ["draupnir_forge.roles"]          # dotted module prefixes
+#       }
+#     }
+#   }
+#
+# A file's domain is the longest matching `paths` prefix of its relative
+# path; an import's domain is the longest matching `modules` prefix of the
+# imported module's dotted name. When both are known and differ, the import
+# is flagged as drift. Relative imports are always intra-domain and never
+# flagged. If architecture.json is absent or invalid, the check is skipped
+# gracefully (no findings, no crash).
+
+checks:
+  hardcoded_secrets:
+    enabled: true
+    severity: high
+    description: >-
+      Literal secret values assigned in code (API keys, passwords, tokens).
+      Secrets belong in vaults and environment, never in the saga's verses.
+    patterns:
+      - '(?i)\b(api[_-]?key|api[_-]?secret|secret[_-]?key|client[_-]?secret)\b\s*[:=]\s*[''"][^''"]{3,}[''"]'
+      - '(?i)\b(passw(or)?d|passwd|pwd)\b\s*[:=]\s*[''"][^''"]+[''"]'
+      - '(?i)\b(auth[_-]?token|access[_-]?token|bearer[_-]?token)\b\s*[:=]\s*[''"][^''"]{3,}[''"]'
+
+  bare_except:
+    enabled: true
+    severity: medium
+    description: >-
+      Bare 'except:' clauses swallow every error, even the sacred ones.
+      Name the beast you catch.
+
+  print_statements:
+    enabled: true
+    severity: medium
+    description: >-
+      print() calls in library code; the Forge speaks through loggers and
+      events, not stdout. Entry-point CLIs are exempt.
+    allowed_files:
+      - "cli.py"
+
+  todo_markers:
+    enabled: true
+    severity: low
+    description: >-
+      TODO / FIXME / XXX markers left in comments — oaths not yet sworn.
+    markers:
+      - "TODO"
+      - "FIXME"
+      - "XXX"
+
+  nesting_depth:
+    enabled: true
+    severity: medium
+    description: >-
+      Control-flow nesting deeper than the allowed maximum; deep nests hide
+      wyrd-threads from mortal eyes.
+    max_depth: 4
+
+  duplicated_blocks:
+    enabled: true
+    severity: medium
+    description: >-
+      Identical code blocks repeated verbatim (hash-based); repeated verses
+      should become one shared saga (a helper).
+    min_lines: 6
+
+  architecture_drift:
+    enabled: true
+    severity: medium
+    description: >-
+      Imports crossing domain boundaries declared in architecture.json.
+      Skipped gracefully when architecture.json is absent.
+    architecture_file: "architecture.json"

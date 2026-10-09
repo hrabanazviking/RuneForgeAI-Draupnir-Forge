@@ -1,0 +1,50 @@
+# Slice 23 — per-role model preferences (data, not code).
+#
+# `default` covers every role not named below. `fallbacks` lists extra
+# model names tried in order when every attempt on the primary model fails
+# with an HTTP 5xx or a network error. Model names must suit the
+# configured provider (model.provider in the Forge config): e.g. use
+# "llama3.1:8b" style names when provider is `ollama`.
+#
+# `retry` controls the per-model retry behavior: each model is attempted
+# `attempts_per_model` times with `backoff_seconds` pauses between tries.
+
+retry:
+  attempts_per_model: 2
+  backoff_seconds: [1.0, 2.0]
+
+default:
+  model: gpt-4o-mini
+  fallbacks: []
+
+roles:
+  skald:
+    model: gpt-4o-mini
+    fallbacks: []
+  cartographer:
+    model: gpt-4o-mini
+    fallbacks: []
+  architect:
+    model: gpt-4o
+    fallbacks: [gpt-4o-mini]
+  planner:
+    model: gpt-4o
+    fallbacks: [gpt-4o-mini]
+  forge_worker:
+    model: gpt-4o-mini
+    fallbacks: []
+  auditor:
+    model: gpt-4o
+    fallbacks: [gpt-4o-mini]
+  tester:
+    model: gpt-4o-mini
+    fallbacks: []
+  verifier:
+    model: gpt-4o-mini
+    fallbacks: []
+  scribe:
+    model: gpt-4o-mini
+    fallbacks: []
+  heimdallr:
+    model: gpt-4o-mini
+    fallbacks: []

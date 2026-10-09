@@ -1,0 +1,43 @@
+# test_output_patterns.yaml — regexes the Tester role (slice 16) uses to parse
+# test-runner output. DATA, never hardcoded: teach the Forge a new runner by
+# adding a section here; the parsing logic in roles/tester.py does not change.
+#
+# Each runner section has:
+#   description: what this output looks like
+#   summary: list of {regex, target} rows; every match is scanned and the
+#            LAST occurrence wins (the summary line sits at the end)
+#   failure_line / error_line: patterns matching one line per failing /
+#            erroring test (no capture groups -> whole line is the block)
+#   runner-specific extras (e.g. unittest's Ran/status lines).
+
+version: 1
+
+runners:
+  pytest:
+    description: "Output of `pytest -q`: short summary lines like 'FAILED x - reason' and a final 'N failed, M passed in Xs' line."
+    summary:
+      - regex: "(\\d+)\\s+passed"
+        target: "passed"
+      - regex: "(\\d+)\\s+failed"
+        target: "failed"
+      - regex: "(\\d+)\\s+error(?:s)?"
+        target: "errors"
+      - regex: "(\\d+)\\s+skipped"
+        target: "skipped"
+      - regex: "(\\d+)\\s+deselected"
+        target: "deselected"
+    failure_line: "(?m)^FAILED[ \\t]+\\S+.*$"
+    error_line: "(?m)^ERROR[ \\t]+\\S+.*$"
+
+  unittest:
+    description: "Output of `python -m unittest` (plain or -v): 'Ran N tests', then 'OK' or 'FAILED (failures=.., errors=.., skipped=..)', with 'FAIL: ...' / 'ERROR: ...' blocks."
+    ran: "(?m)^Ran\\s+(\\d+)\\s+tests?\\b"
+    status: "(?m)^(OK|FAILED)(?:\\s*\\(([^)]*)\\))?\\s*$"
+    count: "(\\w+)\\s*=\\s*(\\d+)"
+    # unittest reports `failures`/`errors`/`skipped`; the Forge counts `failed`.
+    status_fields:
+      failures: "failed"
+      errors: "errors"
+      skipped: "skipped"
+    failure_line: "(?m)^FAIL:.*$"
+    error_line: "(?m)^ERROR:.*$"

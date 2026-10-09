@@ -1,0 +1,58 @@
+# Role authority grants for Draupnir Forge (slice 39).
+#
+# Data, never hardcoded: SecurityPolicy reads these grants instead of
+# embedding them in Python. Role names match src/draupnir_forge/roles/*.
+#
+# Every role holds the universal baseline of READ + WRITE without it
+# being listed here — the forge's bread and water. This file lists only
+# the ADDITIONAL authorities each role may wield. A grant here never
+# overrides a config denial: an action is authorized only when BOTH the
+# config flag (tools.allow_*) and the role grant permit it.
+#
+# Authority names are case-insensitive; valid values are
+# READ, WRITE, EXEC, INSTALL, NETWORK, DESTRUCTIVE.
+#
+# No role receives DESTRUCTIVE by default. Handing a role the axe is a
+# deliberate, per-project decision made in the project config — never a
+# default.
+#
+# NOTE: this file lives in data/ and is shared by every project. The
+# per-project session layer (.mythis/) never modifies it.
+
+roles:
+  # The forge's hands: writes code, runs tests and shells.
+  worker:
+    - WRITE
+    - EXEC
+
+  # Runs the test suite and verification gates; executes, never ships.
+  tester:
+    - EXEC
+
+  # Verifies gates like the tester; probes systems for compliance.
+  verifier:
+    - EXEC
+
+  # Draws maps of the codebase; runs the tools that measure it.
+  cartographer:
+    - EXEC
+
+  # Guardian at the gate; runs audits and watches the watchmen.
+  heimdallr:
+    - EXEC
+
+  # Designs systems on paper and in prompts; executes probes of its plans.
+  architect:
+    - EXEC
+
+  # Reads everything, changes nothing: review-only.
+  auditor: []
+
+  # Plans and decomposes work; pure thought, no hands.
+  planner: []
+
+  # Writes docs and saga-prose; quill only.
+  scribe: []
+
+  # Chants the work into verse; voice only.
+  skald: []

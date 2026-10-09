@@ -1,0 +1,77 @@
+# repair_hints.yaml — data-driven repair hint templates (slice 37).
+#
+# The RepairEngine matches a failure against these rows in order and uses
+# the first hit. Each row names the failure classes it applies to, a regex
+# scanned over "failure class + detail", a human-readable hint template,
+# and the name of the bounded auto-fix strategy in repair.py — or "none"
+# when the fix needs judgment the Forge cannot automate.
+#
+# Template placeholders {g1}, {g2}, ... are filled from the regex's
+# capture groups. Keep hint text free of other curly braces.
+
+hints:
+  - failure_classes: [dependency_failure]
+    pattern: "No module named '([\\w.]+)'"
+    hint: >-
+      Missing dependency '{g1}': it is not defined anywhere in the repo,
+      so it is a third-party package. Add it to requirements.txt (the
+      bounded 'add_requirement' fix does this automatically).
+    strategy: add_requirement
+
+  - failure_classes: [implementation_error]
+    pattern: "name '([\\w]+)' is not defined"
+    hint: >-
+      Undefined name '{g1}': the code uses '{g1}' without importing it.
+      Search the repo for its definition and add the missing import
+      (the bounded 'add_missing_import' fix does this automatically).
+    strategy: add_missing_import
+
+  - failure_classes: [implementation_error]
+    pattern: "cannot import name '([\\w]+)'"
+    hint: >-
+      Broken import of '{g1}': the name is not exported where the import
+      expects it. Check the exporting module's public names and correct
+      the import or add the missing definition.
+    strategy: none
+
+  - failure_classes: [implementation_error]
+    pattern: "(SyntaxError|IndentationError)[^\n]*line (\\d+)"
+    hint: >-
+      {g1} near line {g2}: re-emit that section of the file with valid
+      Python syntax. This needs judgment — no bounded automatic fix is
+      attempted.
+    strategy: none
+
+  - failure_classes: [implementation_error, test_failure]
+    pattern: "AssertionError"
+    hint: >-
+      An assertion failed: compare the expected and actual values in the
+      test output and correct the implementation logic. Never edit the
+      test to make it pass.
+    strategy: none
+
+  - failure_classes: [implementation_error, test_failure]
+    pattern: "(TypeError|AttributeError|KeyError|IndexError|ValueError)"
+    hint: >-
+      {g1} raised: the implementation handed a value of the wrong shape
+      to some operation. Read the traceback's last frame, check what the
+      code assumed versus what it received, and correct the
+      implementation at that frame.
+    strategy: none
+
+  - failure_classes: [test_failure]
+    pattern: ".*"
+    hint: >-
+      A test failed: read the failing test's output, find the first
+      red assertion or traceback frame inside project code (not the
+      test file), and fix the implementation there. Never edit the
+      test to make it pass.
+    strategy: none
+
+  - failure_classes: [implementation_error]
+    pattern: ".*"
+    hint: >-
+      Implementation error with no recognized signature: read the full
+      traceback, reproduce it in isolation, and make the smallest
+      bounded change that removes the failure.
+    strategy: none

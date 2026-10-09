@@ -1,0 +1,122 @@
+# Slice 21 — truncation policy for the Context Compiler (data, not code).
+#
+# When a ContextPackage's token estimate exceeds max_tokens, the sections
+# named in drop_order are emptied from the FRONT of the list first, one at
+# a time, until the estimate fits or the order is exhausted. The task
+# definition, interfaces, and invariants are never dropped — they are the
+# non-negotiable core of the prompt.
+#
+# The compilation knobs below are data too: character budgets, keyword
+# rules for decision matching, and binary/file guards.
+
+max_tokens: 32000
+
+drop_order:
+  - prior_failures
+  - decisions
+  - domain_files
+  - vision_excerpt
+
+# Largest single file slice admitted into domain_files (bytes).
+max_file_bytes: 51200
+
+# Characters of SYSTEM_VISION.md kept as the vision excerpt.
+vision_excerpt_chars: 4000
+
+# Caps on matched sections.
+max_decisions: 20
+max_prior_failures: 20
+
+# Decision keyword matching: words from the task title/goal of at least
+# this length, excluding stopwords, are searched in DECISIONS.md.
+min_keyword_len: 4
+
+stopwords:
+  - the
+  - a
+  - an
+  - and
+  - or
+  - of
+  - to
+  - in
+  - on
+  - for
+  - with
+  - as
+  - by
+  - from
+  - that
+  - this
+  - these
+  - those
+  - is
+  - are
+  - was
+  - were
+  - be
+  - been
+  - being
+  - it
+  - its
+  - at
+  - into
+  - than
+  - then
+  - so
+  - but
+  - not
+  - no
+  - do
+  - does
+  - did
+  - will
+  - would
+  - should
+  - can
+  - could
+  - has
+  - have
+  - had
+  - you
+  - your
+  - our
+  - their
+  - we
+  - they
+  - he
+  - she
+  - them
+  - him
+  - her
+  - his
+  - how
+  - what
+  - when
+  - where
+  - which
+  - who
+  - whom
+  - why
+  - all
+  - any
+  - each
+  - more
+  - most
+  - other
+  - some
+  - such
+  - only
+  - very
+  - new
+  - use
+  - used
+  - using
+  - add
+  - implement
+  - create
+  - build
+  - make
+  - test
+  - task
+  - tasks

@@ -1,0 +1,19 @@
+# Default architectural invariants for Draupnir Forge (slice 12).
+# Data, never hardcoded: the Architect role seeds its INVARIANTS.md from
+# these, then adds generated per-domain invariants on top. Rules.AI.md is
+# the source of truth these were distilled from.
+#
+# Each entry is a single immutable law of the forge. New invariants may be
+# appended by future slices, but none may be silently dropped.
+
+invariants:
+  - "The event log is append-only: events are never edited or deleted."
+  - "State transitions are validated before they are committed."
+  - "No print() calls in library code: logging only."
+  - "Roles never talk to each other directly; the Orchestrator sequences them."
+  - "Every role run returns a RoleResult; roles never raise on bad input."
+  - "Secrets are never hardcoded: configuration and credentials live in data files or the environment."
+  - "Data files are the home of static knowledge; reasoning lives in Python."
+  - "All file writes stay inside the project directory; paths are resolved, never trusted raw."
+  - "Bug fixes are additive: existing working behavior is never removed to fix a bug."
+  - "Public interfaces are documented: every module exposing a public API ships an interface description."

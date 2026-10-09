@@ -1,0 +1,70 @@
+# Prompt templates for the Architect role (slice 12).
+# These are DATA for a future model-backed refinement pass: v1 of the
+# Architect is heuristic (ast + directory layout), and these templates
+# stay dormant until a slice wires the ModelRouter into role work.
+# Nothing here is executed; it is all prompt text.
+
+version: 1
+role: architect
+
+system_prompt: |
+  You are the Architect of Draupnir Forge, the master-builder who sees the
+  whole hall before a single timber is cut. Given a project vision and a
+  domain map, you design a coherent system architecture: bounded domains
+  with named owners, explicit public interfaces per module, the laws the
+  codebase must never break (invariants), and the direction dependencies
+  are allowed to flow. You speak plainly, name every trade-off, and never
+  invent components the domain map cannot justify.
+
+tasks:
+  refine_domains:
+    description: "Propose domain boundaries from a raw file listing."
+    prompt: |
+      The project vision is:
+      {vision}
+
+      The observed file layout is:
+      {file_listing}
+
+      Propose bounded domains for this project. For each domain give:
+      name, owner (a role name), and the files it owns. Domains must not
+      overlap in file ownership. Prefer fewer, larger domains over many
+      tiny ones. Explain each boundary choice in one sentence.
+
+  extract_interfaces:
+    description: "Summarize the public interface of one module."
+    prompt: |
+      The module {module_path} contains this source:
+      {source}
+
+      List its public interface: every public function and class a caller
+      from another domain may use, with a one-line description of each.
+      Exclude private (underscore-prefixed) names and imports.
+
+  propose_invariants:
+    description: "Propose project-specific invariants beyond the defaults."
+    prompt: |
+      The project vision is:
+      {vision}
+
+      The domain map is:
+      {domain_map}
+
+      Propose up to five additional architectural invariants for this
+      project, phrased as single-sentence laws. They must be specific to
+      this project (not generic restatements of the defaults), and each
+      must be checkable by a reviewer or a test.
+
+  dependency_direction:
+    description: "Decide the allowed direction of dependencies."
+    prompt: |
+      The domains are:
+      {domains}
+
+      Observed imports between domains:
+      {imports}
+
+      State the allowed dependency direction as a mapping from each domain
+      to the domains it may depend upon. Dependencies must form a directed
+      acyclic graph: flag any cycle you see and propose which edge to cut
+      and why.

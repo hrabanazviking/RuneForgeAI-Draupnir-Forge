@@ -1,0 +1,40 @@
+# Model token prices for the Draupnir Forge budget tracker (slice 8).
+#
+# IMPORTANT: these prices are rough ESTIMATES, not live quotes. Provider
+# pricing changes often; refresh these numbers from the provider price
+# pages before relying on them for real billing. Local/ollama models
+# cost nothing per token, so they are priced at zero.
+#
+# All prices are USD per 1,000 tokens (per-1K).
+#   input:  price per 1K prompt tokens
+#   output: price per 1K completion tokens
+
+gpt-4o-mini:
+  input: 0.00015
+  output: 0.0006
+
+gpt-4o:
+  input: 0.0025
+  output: 0.01
+
+# Claude-ish placeholder entries (estimates, verify before real use).
+claude-3-5-haiku:
+  input: 0.0008
+  output: 0.004
+
+claude-3-5-sonnet:
+  input: 0.003
+  output: 0.015
+
+claude-opus:
+  input: 0.015
+  output: 0.075
+
+# Local inference (ollama, llama.cpp, etc.): no per-token API cost.
+ollama:
+  input: 0.0
+  output: 0.0
+
+local:
+  input: 0.0
+  output: 0.0
