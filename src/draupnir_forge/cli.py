@@ -3,13 +3,19 @@
 Slice 1 provided the skeleton (--version and subcommand help scaffolding).
 Slice 4 fills in real handlers for every subcommand while keeping the
 ``build_parser()`` / ``SUBCOMMANDS`` / ``main()`` structure intact.
+Slice 31 routes ``status`` through the §19 progress panel (ui.py).
+Slice 32 wires the glass-box inspection commands: ``roadmap`` gains a
+dependency column, ``events`` gains ``--since``, ``architecture`` and
+``decisions`` read the canonical .mythis/ docs, and ``forge`` constructs
+the real Orchestrator (dry-run prints the state walk; the autonomous
+loop itself lands in slice 46).
 
 Design notes (for future slices):
   - All user-facing output goes through ``print()`` calls in *this module
     only*. Library code must never print; it returns values or raises.
-  - ``forge`` (slice 20), ``checkpoint`` (slice 28), ``metrics`` (slice 41)
-    and the full ``init`` modes (slices 29/30) are honestly reported as
-    not-yet-implemented with exit code 2 rather than faked.
+  - ``forge`` (slices 20/46), ``checkpoint`` (slice 28), ``metrics``
+    (slice 41) and the full ``init`` modes (slices 29/30) are honestly
+    reported as not-yet-implemented with exit code 2 rather than faked.
   - Every read-only command tolerates a missing ``.mythis/`` tree ("not
     found" message, exit 0); corrupt JSON is reported on stderr, exit 2.
 """
@@ -30,10 +36,12 @@ from . import __version__
 # Declared here so `draupnir <cmd> --help` already resolves.
 SUBCOMMANDS = (
     "init",        # slice 4 (+29/30): create .mythis/ project skeleton
-    "forge",       # slice 4 (+20): run the autonomous loop
+    "forge",       # slice 4 (+20/46): run the autonomous loop
     "status",      # slice 4 (+31): black-box progress view
     "roadmap",     # slice 4 (+32): show task graph
     "events",      # slice 4 (+32): inspect event log
+    "architecture",  # slice 32: print .mythis/ARCHITECTURE.md
+    "decisions",     # slice 32: print .mythis/DECISIONS.md ledger
     "checkpoint",  # slice 4 (+28): git checkpoint now
     "metrics",     # slice 41: success metrics dashboard
 )
@@ -44,6 +52,8 @@ _SKELETON_DIRS = ("logs", "evidence", "sessions")
 _PROJECT_STATE_FILE = "PROJECT_STATE.json"
 _ROADMAP_FILE = "roadmap.json"
 _EVENTS_FILE = "events.jsonl"
+_ARCHITECTURE_FILE = "ARCHITECTURE.md"
+_DECISIONS_FILE = "DECISIONS.md"
 
 _DEFAULT_EVENT_LIMIT = 20
 
@@ -111,14 +121,42 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_forge(args: argparse.Namespace) -> int:
-    """Run the autonomous forge loop. Lands in slice 20 — report honestly."""
-    del args  # the loop does not exist yet; nothing to consume
-    print("forge loop not yet implemented (slice 20)")
+    """Prepare the real Orchestrator, then report honestly.
+
+    Slice 32 wires this command to actually construct the Orchestrator —
+    no fake loop. ``--dry-run`` prints the states the loop will walk and
+    exits 0; without it, the autonomous loop is still honest: it is
+    enabled in slice 46 (the dogfood milestone), so we exit 2.
+    """
+    root = _project_root(args)
+    try:
+        from . import machine as _machine
+        from .orchestrator import Orchestrator
+
+        _orchestrator = Orchestrator(root)  # noqa: F841  (wired, not run)
+    except Exception as exc:  # the forge never dies preparing the forge
+        print(f"draupnir forge: cannot prepare the forge: {exc}",
+              file=sys.stderr)
+        return 2
+    print("starting forge loop...")
+    if getattr(args, "dry_run", False):
+        print("dry run: the forge loop would walk these states:")
+        for index, state_name in enumerate(_machine.STATES, start=1):
+            print(f"  {index:>2}. {state_name}")
+        return 0
+    print("autonomous loop enabled in slice 46")
     return 2
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    """Show phase/goal/updated from .mythis/PROJECT_STATE.json. Exit 0/2."""
+    """Render the §19 black-box progress panel (slice 31). Exit 0/2.
+
+    Reads ``.mythis/PROJECT_STATE.json`` plus, on a best-effort basis,
+    ``.mythis/roadmap.json`` for the task lists. A missing roadmap does
+    not fail the command; corrupt state JSON still exits 2.
+    """
+    from .ui import ProgressView
+
     state_path = _project_root(args) / _MYTHIS_DIR / _PROJECT_STATE_FILE
     if not state_path.is_file():
         print("no project: run 'draupnir init' to create a project skeleton")
@@ -131,10 +169,16 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not isinstance(state, dict):
         print("draupnir status: project state is not a JSON object", file=sys.stderr)
         return 2
-    print(f"phase:   {state.get('phase', 'UNKNOWN')}")
-    goal = state.get("goal") or "(none)"
-    print(f"goal:    {goal}")
-    print(f"updated: {state.get('updated', '(unknown)')}")
+    tasks: list[Any] = []
+    roadmap_path = _project_root(args) / _MYTHIS_DIR / _ROADMAP_FILE
+    if roadmap_path.is_file():
+        try:
+            raw = roadmap_path.read_text(encoding="utf-8")
+            tasks = _extract_tasks(json.loads(raw))
+        except (OSError, json.JSONDecodeError):
+            tasks = []  # self-healing: a torn roadmap dims, not kills
+    health = str(state.get("health") or "Stable")
+    print(ProgressView.render(state, tasks, health))
     return 0
 
 
@@ -150,8 +194,33 @@ def _extract_tasks(data: Any) -> list[Any]:
     return []
 
 
+def _task_id_of(task: dict) -> str:
+    """Best-effort id for a task dict (planner's task_id, legacy id...)."""
+    for key in ("task_id", "id", "slice"):
+        value = task.get(key)
+        if value:
+            return str(value)
+    return "?"
+
+
+def _depends_of(task: dict) -> str:
+    """Dependency list for a task dict, rendered as 'T-001, T-002'."""
+    raw = task.get("depends_on", task.get("depends", []))
+    if isinstance(raw, str):
+        return raw
+    try:
+        return ", ".join(str(dep) for dep in raw)
+    except TypeError:
+        return ""
+
+
 def cmd_roadmap(args: argparse.Namespace) -> int:
-    """Print the task table from .mythis/roadmap.json. Exit 0/2."""
+    """Print the task table from .mythis/roadmap.json. Exit 0/2.
+
+    Slice 32: the table carries ``ID STATUS TITLE`` plus dependency
+    info, and tolerates both planner-shaped tasks (``task_id``) and
+    hand-written ones (``id``/``slice``).
+    """
     roadmap_path = _project_root(args) / _MYTHIS_DIR / _ROADMAP_FILE
     if not roadmap_path.is_file():
         print("no roadmap yet")
@@ -168,23 +237,40 @@ def cmd_roadmap(args: argparse.Namespace) -> int:
     print(f"{'ID':<10}{'STATUS':<14}TITLE")
     for task in tasks:
         if isinstance(task, dict):
-            task_id = str(task.get("id", task.get("slice", "?")))
-            status = str(task.get("status", task.get("state", "?")))
+            task_id = _task_id_of(task)
+            status = str(task.get("status", task.get("state", "?")) or "?")
             title = str(task.get("title", task.get("name", "")))
+            depends = _depends_of(task)
+            if depends:
+                title = f"{title}  [depends on: {depends}]"
         else:
             task_id, status, title = "?", "?", str(task)
         print(f"{task_id:<10}{status:<14}{title}")
     return 0
 
 
+def _event_seq(event: dict[str, Any]) -> int | None:
+    """Numeric sequence number of an event, or None if it has none."""
+    seq = event.get("seq")
+    if isinstance(seq, bool):
+        return None
+    return seq if isinstance(seq, int) else None
+
+
 def cmd_events(args: argparse.Namespace) -> int:
-    """Tail .mythis/events.jsonl (last 20, --limit N, --type T). Exit 0/2."""
+    """Tail .mythis/events.jsonl (last 20, --limit N, --type T, --since S).
+
+    Slice 32 adds ``--since SEQ``: only events with a sequence number
+    strictly greater than SEQ are shown. Events without a numeric seq
+    always survive the filter (they cannot be placed in order).
+    """
     events_path = _project_root(args) / _MYTHIS_DIR / _EVENTS_FILE
     if not events_path.is_file():
         print("no events")
         return 0
     limit = args.limit if isinstance(args.limit, int) else _DEFAULT_EVENT_LIMIT
     type_filter = str(args.type) if args.type else None
+    since = args.since if isinstance(args.since, int) else None
     rows: list[dict[str, Any]] = []
     skipped = 0
     try:
@@ -205,6 +291,10 @@ def cmd_events(args: argparse.Namespace) -> int:
                     event.get("type", "")
                 ) != type_filter:
                     continue
+                if since is not None:
+                    seq = _event_seq(event)
+                    if seq is not None and seq <= since:
+                        continue
                 rows.append(event)
     except OSError as exc:
         print(f"draupnir events: cannot read event log: {exc}", file=sys.stderr)
@@ -219,6 +309,36 @@ def cmd_events(args: argparse.Namespace) -> int:
     if skipped:
         print(f"({skipped} unreadable event line(s) skipped)", file=sys.stderr)
     return 0
+
+
+def _print_canonical_doc(
+    args: argparse.Namespace, filename: str, missing_message: str
+) -> int:
+    """Read-only printer for a .mythis/ canonical Markdown document."""
+    doc_path = _project_root(args) / _MYTHIS_DIR / filename
+    if not doc_path.is_file():
+        print(missing_message)
+        return 0
+    try:
+        text = doc_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"draupnir: cannot read {filename}: {exc}", file=sys.stderr)
+        return 2
+    if not text.strip():
+        print(missing_message)
+        return 0
+    print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
+def cmd_architecture(args: argparse.Namespace) -> int:
+    """Print .mythis/ARCHITECTURE.md, or 'not yet generated'. Exit 0/2."""
+    return _print_canonical_doc(args, _ARCHITECTURE_FILE, "not yet generated")
+
+
+def cmd_decisions(args: argparse.Namespace) -> int:
+    """Print the .mythis/DECISIONS.md ledger, or 'no decisions recorded'."""
+    return _print_canonical_doc(args, _DECISIONS_FILE, "no decisions recorded")
 
 
 def cmd_checkpoint(args: argparse.Namespace) -> int:
@@ -241,6 +361,8 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "status": cmd_status,
     "roadmap": cmd_roadmap,
     "events": cmd_events,
+    "architecture": cmd_architecture,
+    "decisions": cmd_decisions,
     "checkpoint": cmd_checkpoint,
     "metrics": cmd_metrics,
 }
@@ -278,6 +400,10 @@ def build_parser() -> argparse.ArgumentParser:
         "path", nargs="?", default=None,
         help="Directory to initialize (default: --project-dir).",
     )
+    parsers["forge"].add_argument(
+        "--dry-run", action="store_true",
+        help="Print the state walk the loop would take; do not run it.",
+    )
     parsers["events"].add_argument(
         "--limit", type=int, default=_DEFAULT_EVENT_LIMIT,
         help=f"Show the last N events (default: {_DEFAULT_EVENT_LIMIT}).",
@@ -285,6 +411,10 @@ def build_parser() -> argparse.ArgumentParser:
     parsers["events"].add_argument(
         "--type", default=None,
         help="Only show events of this type.",
+    )
+    parsers["events"].add_argument(
+        "--since", type=int, default=None, metavar="SEQ",
+        help="Only show events with a sequence number greater than SEQ.",
     )
     return parser
 

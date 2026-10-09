@@ -46,7 +46,8 @@ class TestParserStructure(unittest.TestCase):
     def test_subcommands_match_roadmap(self):
         self.assertEqual(
             SUBCOMMANDS,
-            ("init", "forge", "status", "roadmap", "events", "checkpoint", "metrics"),
+            ("init", "forge", "status", "roadmap", "events",
+             "architecture", "decisions", "checkpoint", "metrics"),
         )
 
     def test_global_flags_exist(self):
@@ -119,9 +120,12 @@ class TestInit(unittest.TestCase):
 
 class TestForgeCheckpointMetrics(unittest.TestCase):
     def test_forge_honest_exit_2(self):
+        # Slice 32: forge constructs the real Orchestrator and stays
+        # honest — the autonomous loop lands in slice 46.
         code, out, _err = run_cli(["forge"])
         self.assertEqual(code, 2)
-        self.assertIn("slice 20", out)
+        self.assertIn("starting forge loop...", out)
+        self.assertIn("slice 46", out)
 
     def test_checkpoint_honest_exit_2(self):
         code, out, _err = run_cli(["checkpoint"])
@@ -142,13 +146,15 @@ class TestStatus(unittest.TestCase):
             self.assertIn("no project", out)
 
     def test_status_reads_state(self):
+        # Slice 31: status renders the §19 progress panel via ProgressView.
         with TemporaryDirectory() as tmp:
             write_project_state(Path(tmp), phase="FORGE", goal="build the thing")
             code, out, _err = run_cli(["--project-dir", tmp, "status"])
             self.assertEqual(code, 0)
-            self.assertIn("FORGE", out)
-            self.assertIn("build the thing", out)
-            self.assertIn("2026-10-09", out)
+            self.assertIn("DRAUPNIR FORGE", out)
+            self.assertIn("Current phase: FORGE", out)
+            self.assertIn("Project: build the thing", out)
+            self.assertIn("Overall: 0%", out)
 
     def test_status_after_init(self):
         with TemporaryDirectory() as tmp:
