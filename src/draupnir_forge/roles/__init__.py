@@ -10,8 +10,12 @@ from . import architect  # noqa: F401
 from . import auditor  # noqa: F401
 from . import base  # noqa: F401
 from . import cartographer  # noqa: F401
+from . import heimdallr  # noqa: F401
 from . import planner  # noqa: F401
+from . import scribe  # noqa: F401
 from . import skald  # noqa: F401
+from . import tester  # noqa: F401
+from . import verifier  # noqa: F401
 from . import worker  # noqa: F401
 
 __all__ = [
@@ -19,7 +23,11 @@ __all__ = [
     "auditor",
     "base",
     "cartographer",
+    "heimdallr",
     "planner",
+    "scribe",
     "skald",
+    "tester",
+    "verifier",
     "worker",
 ]
