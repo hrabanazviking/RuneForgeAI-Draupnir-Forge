@@ -13,9 +13,10 @@ loop itself lands in slice 46).
 Design notes (for future slices):
   - All user-facing output goes through ``print()`` calls in *this module
     only*. Library code must never print; it returns values or raises.
-  - ``forge`` (slices 20/46), ``checkpoint`` (slice 28), ``metrics``
-    (slice 41) and the full ``init`` modes (slices 29/30) are honestly
-    reported as not-yet-implemented with exit code 2 rather than faked.
+  - ``forge`` (slices 20/46), ``checkpoint`` (slice 28) and the full
+    ``init`` modes (slices 29/30) are honestly reported as
+    not-yet-implemented with exit code 2 rather than faked.
+    ``metrics`` is live from slice 41 (spec §33 dashboard).
   - Every read-only command tolerates a missing ``.mythis/`` tree ("not
     found" message, exit 0); corrupt JSON is reported on stderr, exit 2.
 """
@@ -349,10 +350,31 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
 
 
 def cmd_metrics(args: argparse.Namespace) -> int:
-    """Show the success-metrics dashboard. Lands in slice 41."""
-    del args
-    print("metrics land in slice 41")
-    return 2
+    """Print the spec §33 success-metrics dashboard (slice 41).
+
+    Reads ``.mythis/events.jsonl`` and the ``budget.json`` ledger; both
+    missing or empty yields a zero table, never a crash. Exit 0/2.
+    """
+    from .budget import Budget
+    from .events import EventLog
+    from .metrics import Metrics, render
+
+    root = _project_root(args)
+    mythis = root / _MYTHIS_DIR
+    if not (mythis / _EVENTS_FILE).is_file():
+        print("no events: run forge tasks first")
+        return 0
+    try:
+        event_log = EventLog(root)
+        # Generous caps: the real caps live in the forge run config; the
+        # dashboard only needs the ledger's recorded usage.
+        budget = Budget(root, max_tokens=10**15, max_cost_usd=10**15)
+        metrics = Metrics(event_log, budget).compute()
+    except Exception as exc:  # the dashboard never sinks the ship
+        print(f"draupnir metrics: cannot compute metrics: {exc}", file=sys.stderr)
+        return 2
+    print(render(metrics))
+    return 0
 
 
 _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {

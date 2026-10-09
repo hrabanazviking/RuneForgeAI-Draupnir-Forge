@@ -132,10 +132,13 @@ class TestForgeCheckpointMetrics(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("slice 28", out)
 
-    def test_metrics_honest_exit_2(self):
-        code, out, _err = run_cli(["metrics"])
-        self.assertEqual(code, 2)
-        self.assertIn("slice 41", out)
+    def test_metrics_dashboard_live_exit_0(self):
+        # Slice 41: metrics is live now — it prints the §33 dashboard
+        # (with no events it says so, exit 0, not the old exit 2).
+        with TemporaryDirectory() as tmp:
+            code, out, _err = run_cli(["--project-dir", tmp, "metrics"])
+            self.assertEqual(code, 0)
+            self.assertIn("no events", out.lower())
 
 
 class TestStatus(unittest.TestCase):
