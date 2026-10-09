@@ -266,6 +266,28 @@ class ProjectState:
         self._commit()
         return TERMINAL_PHASE
 
+    def interrupt(self, new_phase: str) -> str:
+        """Out-of-band phase change, bypassing the transition map.
+
+        Reserved for interrupts that are not forward progress —
+        currently only HUMAN_DECISION (the Orchestrator pausing for the
+        human, which may strike from any phase). Mirrors complete():
+        the map governs the walk, but an explicit interrupt may stop it
+        from anywhere. Ordinary flow must still use transition().
+
+        Raises:
+            IllegalTransition: If new_phase is not a sanctioned
+                interrupt target.
+        """
+        if new_phase != "HUMAN_DECISION":
+            raise IllegalTransition(
+                "interrupt() only supports HUMAN_DECISION, "
+                f"got {new_phase!r}"
+            )
+        self._data["phase"] = new_phase
+        self._commit()
+        return new_phase
+
     def update(self, **fields: Any) -> Dict[str, Any]:
         """Update goal, task_id, and/or counters (not phase — use transition()).
 
