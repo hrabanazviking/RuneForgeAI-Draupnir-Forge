@@ -258,12 +258,36 @@ def _event_seq(event: dict[str, Any]) -> int | None:
     return seq if isinstance(seq, int) else None
 
 
+def _parse_iso_ts(value: str) -> datetime.datetime | None:
+    """Parse an ISO-8601 timestamp; None when it cannot be parsed.
+
+    A trailing ``Z`` is accepted as UTC. Naive timestamps are treated
+    as UTC so they compare sanely against the forge's UTC stamps.
+    """
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
 def cmd_events(args: argparse.Namespace) -> int:
-    """Tail .mythis/events.jsonl (last 20, --limit N, --type T, --since S).
+    """Tail .mythis/events.jsonl (last 20, --limit N, --type T, --since S,
+    --since-time ISO).
 
     Slice 32 adds ``--since SEQ``: only events with a sequence number
     strictly greater than SEQ are shown. Events without a numeric seq
     always survive the filter (they cannot be placed in order).
+
+    Slice 46 adds ``--since-time ISO``: only events whose ``ts`` is at
+    or after the given ISO-8601 timestamp are shown. Events without a
+    parseable ``ts`` always survive the filter. An unparseable
+    ``--since-time`` value is an error (stderr, exit 2).
     """
     events_path = _project_root(args) / _MYTHIS_DIR / _EVENTS_FILE
     if not events_path.is_file():
@@ -272,6 +296,16 @@ def cmd_events(args: argparse.Namespace) -> int:
     limit = args.limit if isinstance(args.limit, int) else _DEFAULT_EVENT_LIMIT
     type_filter = str(args.type) if args.type else None
     since = args.since if isinstance(args.since, int) else None
+    since_time = None
+    if getattr(args, "since_time", None):
+        since_time = _parse_iso_ts(str(args.since_time))
+        if since_time is None:
+            print(
+                f"draupnir events: cannot parse --since-time "
+                f"{args.since_time!r} as ISO-8601",
+                file=sys.stderr,
+            )
+            return 2
     rows: list[dict[str, Any]] = []
     skipped = 0
     try:
@@ -295,6 +329,10 @@ def cmd_events(args: argparse.Namespace) -> int:
                 if since is not None:
                     seq = _event_seq(event)
                     if seq is not None and seq <= since:
+                        continue
+                if since_time is not None:
+                    event_ts = _parse_iso_ts(str(event.get("ts", "") or ""))
+                    if event_ts is not None and event_ts < since_time:
                         continue
                 rows.append(event)
     except OSError as exc:
@@ -437,6 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
     parsers["events"].add_argument(
         "--since", type=int, default=None, metavar="SEQ",
         help="Only show events with a sequence number greater than SEQ.",
+    )
+    parsers["events"].add_argument(
+        "--since-time", default=None, metavar="ISO-8601",
+        help="Only show events at or after this ISO-8601 timestamp.",
     )
     return parser
 

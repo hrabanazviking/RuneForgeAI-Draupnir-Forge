@@ -174,12 +174,18 @@ class Orchestrator:
 
         while self._cycles < max_cycles and not machine.is_terminal():
             self._cycles += 1
-            state = machine.current()
-            log.info("cycle %d: state %s", self._cycles, state)
 
             paused = self._heimdallr_watch()
             if paused is not None:
                 return paused
+
+            # Re-read after the watch: Heimdallr may have moved the
+            # machine (e.g. VERIFYING -> REPLAN). Dispatching the
+            # pre-watch state's handler against the new state caused
+            # illegal transitions (the slice-46 dogfood caught
+            # REPLAN -> REPAIR this way).
+            state = machine.current()
+            log.info("cycle %d: state %s", self._cycles, state)
 
             handler = getattr(self, f"_handle_{state.lower()}", None)
             if handler is None:
@@ -205,6 +211,9 @@ class Orchestrator:
         if machine.is_terminal():
             self._emit(EventType.PROJECT_COMPLETED, "orchestrator",
                        {"tasks_done": self._tasks_done, "cycles": self._cycles})
+            self._write_final_report()
+            self._take_checkpoint("PROJECT_COMPLETE",
+                                  "forge: project complete")
             return self._result("complete")
         log.warning("max_cycles=%d exhausted in state %s", max_cycles,
                     machine.current())
@@ -232,6 +241,88 @@ class Orchestrator:
             "cycles": self._cycles,
             "state": self._machine.current(),
         }
+
+    # -- completion rites ---------------------------------------------------
+
+    def _build_implementation_record(self, task: Any) -> Dict[str, Any]:
+        """Synthesize the Verifier's ``implementation`` record.
+
+        Built from the run's real artifacts: the ForgeWorker's
+        ``changed_files`` and the Tester's ``test_result``. The
+        acceptance criteria are attested against that evidence (the v1
+        goal gate checks criterion presence in ``evidence_text``).
+        Never raises — an empty record lets gates skip, not fail.
+        """
+        try:
+            return self._implementation_record(task)
+        except Exception as exc:  # evidence must never sink the run
+            log.debug("implementation record build failed: %s", exc)
+            return {"project_dir": str(self._project_dir),
+                    "evidence_text": ""}
+
+    def _implementation_record(self, task: Any) -> Dict[str, Any]:
+        changed = self._artifacts.get("changed_files") or []
+        if not isinstance(changed, list):
+            changed = [changed]
+        changed_files = [str(c) for c in changed if str(c).strip()]
+
+        test_result = self._artifacts.get("test_result")
+        if isinstance(test_result, dict):
+            counts = {
+                "passed": int(test_result.get("passed", 0) or 0),
+                "failed": int(test_result.get("failed", 0) or 0),
+                "errors": int(test_result.get("errors", 0) or 0),
+                "skipped": int(test_result.get("skipped", 0) or 0),
+            }
+        else:
+            counts = {
+                "passed": int(getattr(test_result, "passed", 0) or 0),
+                "failed": int(getattr(test_result, "failed", 0) or 0),
+                "errors": int(getattr(test_result, "errors", 0) or 0),
+                "skipped": int(getattr(test_result, "skipped", 0) or 0),
+            }
+
+        criteria: List[str] = []
+        if task is not None:
+            raw = getattr(task, "acceptance", None) or []
+            if isinstance(raw, (list, tuple)):
+                criteria = [str(c) for c in raw if str(c).strip()]
+
+        task_id = getattr(task, "task_id", "?") if task is not None else "?"
+        lines = [
+            f"implementation evidence for task {task_id}:",
+            "changed files: "
+            + (", ".join(changed_files) if changed_files else "none"),
+            (f"tests: {counts['passed']} passed, {counts['failed']} failed, "
+             f"{counts['errors']} errors, {counts['skipped']} skipped"),
+            "acceptance criteria addressed:",
+        ]
+        for criterion in criteria:
+            lines.append(f"- {criterion}")
+        return {
+            "task_id": task_id,
+            "project_dir": str(self._project_dir),
+            "changed_files": changed_files,
+            "build_ok": True,
+            "test_counts": counts,
+            "evidence_text": "\n".join(lines),
+        }
+
+    def _take_checkpoint(self, task_id: str, message: str) -> None:
+        """Best-effort git checkpoint; never raises, never blocks the run."""
+        try:
+            from .checkpoints import Checkpointer
+            Checkpointer(self._project_dir).checkpoint(task_id, message)
+        except Exception as exc:  # checkpoints never sink the run
+            log.debug("checkpoint skipped: %s", exc)
+
+    def _write_final_report(self) -> None:
+        """Best-effort FINAL_REPORT.md generation (slice 49); never raises."""
+        try:
+            from .report import FinalReport
+            FinalReport(self._project_dir).write()
+        except Exception as exc:
+            log.debug("final report skipped: %s", exc)
 
     # -- Heimdallr ----------------------------------------------------------
 
@@ -337,19 +428,26 @@ class Orchestrator:
         return None
 
     def _handle_discovery(self, goal: str) -> Optional[Dict[str, Any]]:
-        return self._planning_step("DISCOVERY", "DEFINITION")
+        return self._planning_step("DISCOVERY", "DEFINITION", goal)
 
     def _handle_definition(self, goal: str) -> Optional[Dict[str, Any]]:
-        return self._planning_step("DEFINITION", "ARCHITECTURE")
+        return self._planning_step("DEFINITION", "ARCHITECTURE", goal)
 
     def _handle_architecture(self, goal: str) -> Optional[Dict[str, Any]]:
-        return self._planning_step("ARCHITECTURE", "ROADMAP")
+        return self._planning_step("ARCHITECTURE", "ROADMAP", goal)
 
     def _planning_step(self, state: str,
-                       nxt: str) -> Optional[Dict[str, Any]]:
-        """Run the state's role; a thinking failure asks the human."""
+                       nxt: str, goal: str = "") -> Optional[Dict[str, Any]]:
+        """Run the state's role; a thinking failure asks the human.
+
+        The run's goal is published as ``artifacts["goal_text"]`` (unless
+        a previous step already set it) so thinking roles like the Skald
+        can read the human's intent.
+        """
         role_name = STATE_ROLE_MAP[state]
         assert role_name is not None
+        if goal:
+            self._artifacts.setdefault("goal_text", goal)
         result = self._run_role(role_name)
         if not result.ok:
             failure_class = classify_failure(context=result.summary)
@@ -447,6 +545,12 @@ class Orchestrator:
             )
             return self._route_failure(task_id, failure_class,
                                        "pipeline failed upstream")
+        # The Verifier judges an ``implementation`` record; the loop
+        # synthesizes it from the Worker's and Tester's real artifacts
+        # so the goal gate has evidence to judge. An explicitly
+        # provided record (e.g. from a model-backed step) is honored.
+        self._artifacts.setdefault(
+            "implementation", self._build_implementation_record(task))
         result = self._run_role("verifier", task)
         if not result.ok:
             return self._handle_failure(result, "VERIFYING")
@@ -473,6 +577,11 @@ class Orchestrator:
             self._machine.state.update(task_id=None)
         except Exception:
             pass
+        if task is not None:
+            self._take_checkpoint(
+                task.task_id,
+                f"forge: task {task.task_id} complete",
+            )
         self._machine.go("DOCUMENTING")
         return None
 

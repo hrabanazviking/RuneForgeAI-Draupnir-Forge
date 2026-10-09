@@ -868,6 +868,25 @@ RuneForgeAI-Draupnir-Forge/
 
 ---
 
+## ⚡ Quickstart
+
+```bash
+git clone https://github.com/hrabanazviking/RuneForgeAI-Draupnir-Forge
+cd RuneForgeAI-Draupnir-Forge
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .                 # or: PYTHONPATH=src, stdlib + PyYAML only
+draupnir --version               # draupnir 0.1.0
+draupnir init --project-dir /tmp/demo   # scaffold .mythis/
+draupnir status --project-dir /tmp/demo # glass-box state view
+PYTHONPATH=src python3 -m unittest discover -s tests  # 709 tests, green
+```
+
+Set `OPENAI_API_KEY` (or point `model.provider` at `ollama`/`custom`
+in `.mythis/config.yaml`) and run `draupnir forge --project-dir
+/tmp/demo` to drive the full intent→verify loop.
+
+---
+
 ## 🚧 Project Status
 
 **Concept / Future Project**

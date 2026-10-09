@@ -372,6 +372,12 @@ class Architect(Role):
             if not isinstance(vision, dict):
                 vision = {}
             if not isinstance(domain_map, dict):
+                # The Cartographer hands over its full DomainMap chart
+                # object; the domain table is what we build from.
+                chart_domains = getattr(domain_map, "domains", None)
+                if isinstance(chart_domains, dict):
+                    domain_map = chart_domains
+            if not isinstance(domain_map, dict):
                 return RoleResult(
                     ok=False,
                     summary="architect: domain_map artifact must be a mapping",

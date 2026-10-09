@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -313,6 +314,19 @@ def run_tests(project_dir: str, timeout: int = 600) -> TestResult:
             duration_s=0.0, raw_output="", failures=[], command=[],
         )
 
+    # Make a src-layout project's package importable for its own suite:
+    # without this, `import <package>` fails unless the caller's
+    # PYTHONPATH happens to resolve into the project (a latent bug the
+    # slice-46 dogfood caught: absolute PYTHONPATH broke new-project
+    # smoke tests that relative PYTHONPATH=src masked).
+    env = dict(os.environ)
+    src_dir = os.path.join(project_dir, "src")
+    if os.path.isdir(src_dir):
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            src_dir + (os.pathsep + existing if existing else "")
+        )
+
     full_output = ""
     try:
         proc = subprocess.run(
@@ -321,6 +335,7 @@ def run_tests(project_dir: str, timeout: int = 600) -> TestResult:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""

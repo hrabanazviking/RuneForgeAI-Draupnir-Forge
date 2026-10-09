@@ -71,10 +71,17 @@ class TestNewProjectMode(unittest.TestCase):
     def test_smoke_test_really_passes(self):
         # Independent re-verification: the scaffold's own suite passes.
         self.mode.run("Build a tiny task queue with priorities.")
+        env = dict(os.environ)
+        scaffold_src = os.path.join(self.project, "src")
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            scaffold_src + (os.pathsep + existing if existing else "")
+        )
         proc = subprocess.run(
             [sys.executable, "-m", "unittest", "discover",
              "-s", "tests", "-q"],
-            cwd=self.project, capture_output=True, text=True, timeout=120)
+            cwd=self.project, capture_output=True, text=True, timeout=120,
+            env=env)
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
 
     def test_smoke_test_content_asserts_behavior(self):

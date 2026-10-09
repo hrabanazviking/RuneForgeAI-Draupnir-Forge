@@ -280,5 +280,76 @@ class TestEvents(unittest.TestCase):
             self.assertIn("tester", out)
 
 
+class TestEventsSinceTime(unittest.TestCase):
+    """Slice 46 dogfood feature: --since-time ISO-8601 filtering."""
+
+    def _write_ts_events(self, tmp: Path) -> None:
+        mythis = tmp / ".mythis"
+        mythis.mkdir(parents=True, exist_ok=True)
+        lines = [
+            json.dumps({
+                "seq": 1,
+                "ts": "2026-10-08T12:00:00+00:00",
+                "type": "OLD_EVENT",
+                "actor_role": "tester",
+            }),
+            json.dumps({
+                "seq": 2,
+                "ts": "2026-10-09T12:00:00+00:00",
+                "type": "NEW_EVENT",
+                "actor_role": "tester",
+            }),
+            json.dumps({
+                "seq": 3,
+                "type": "TIMELESS_EVENT",  # no ts: always survives
+                "actor_role": "tester",
+            }),
+        ]
+        (mythis / "events.jsonl").write_text("\n".join(lines) + "\n",
+                                             encoding="utf-8")
+
+    def test_since_time_filters_older_events(self):
+        with TemporaryDirectory() as tmp:
+            self._write_ts_events(Path(tmp))
+            code, out, _err = run_cli([
+                "--project-dir", tmp, "events",
+                "--since-time", "2026-10-09T00:00:00+00:00",
+            ])
+            self.assertEqual(code, 0)
+            self.assertNotIn("OLD_EVENT", out)
+            self.assertIn("NEW_EVENT", out)
+
+    def test_since_time_keeps_events_without_ts(self):
+        with TemporaryDirectory() as tmp:
+            self._write_ts_events(Path(tmp))
+            code, out, _err = run_cli([
+                "--project-dir", tmp, "events",
+                "--since-time", "2026-10-09T00:00:00+00:00",
+            ])
+            self.assertEqual(code, 0)
+            self.assertIn("TIMELESS_EVENT", out)  # unparseable ts survives
+
+    def test_since_time_accepts_z_suffix(self):
+        with TemporaryDirectory() as tmp:
+            self._write_ts_events(Path(tmp))
+            code, out, _err = run_cli([
+                "--project-dir", tmp, "events",
+                "--since-time", "2026-10-09T00:00:00Z",
+            ])
+            self.assertEqual(code, 0)
+            self.assertIn("NEW_EVENT", out)
+            self.assertNotIn("OLD_EVENT", out)
+
+    def test_since_time_invalid_exits_2(self):
+        with TemporaryDirectory() as tmp:
+            self._write_ts_events(Path(tmp))
+            code, _out, err = run_cli([
+                "--project-dir", tmp, "events",
+                "--since-time", "not-a-timestamp",
+            ])
+            self.assertEqual(code, 2)
+            self.assertIn("ISO-8601", err)
+
+
 if __name__ == "__main__":
     unittest.main()
