@@ -1,0 +1,37 @@
+# Default configuration for Draupnir Forge.
+# Layered overrides: defaults < ~/.draupnir/config.yaml <
+# <project>/.mythis/config.yaml < DRAUPNIR_* env < explicit dict.
+# (See slice 2: config.py implements the layering.)
+
+# --- model routing (slice 23) ---
+model:
+  provider: openai          # openai | ollama | custom
+  name: gpt-4o-mini         # default working model
+  api_base: ""              # empty = provider default; custom URL for custom/ollama
+  api_key_env: OPENAI_API_KEY
+  timeout_s: 120
+  max_retries: 3
+
+# --- token / cost budget (slice 8) ---
+budget:
+  max_tokens: 2000000
+  max_cost_usd: 25.00
+
+# --- autonomy (slice 20/27) ---
+# guided: ask before architecture/deps/destructive/deployment
+# trusted: autonomous inside agreed architecture
+# deep: run until complete / budget / hard blocker
+autonomy: trusted
+
+# --- git checkpoints (slice 28) ---
+git:
+  auto_checkpoint: true
+
+# --- tool authority (slice 24/39) ---
+# read|write|exec|install|network|destructive — default-deny destructive+network
+tools:
+  allow_exec: true
+  allow_install: false
+  allow_network: false
+  allow_destructive: false
+  default_timeout_s: 300

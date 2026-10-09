@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "draupnir-forge"
+version = "0.1.0"
+description = "Recursive Mythic Engineering for autonomous AI-native software development."
+readme = "README.md"
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+authors = [{ name = "Volmarr Wyrd" }]
+
+[project.scripts]
+draupnir = "draupnir_forge.cli:main"
+
+[project.optional-dependencies]
+dev = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+draupnir_forge = ["py.typed"]

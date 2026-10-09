@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Draupnir Forge runtime
+.mythis/
+*.log
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
