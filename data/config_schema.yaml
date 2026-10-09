@@ -50,3 +50,5 @@ constraints:
   tools.default_timeout_s:
     type: int
     min: 1
+  tools.audit:
+    type: bool

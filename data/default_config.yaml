@@ -35,3 +35,5 @@ tools:
   allow_network: false
   allow_destructive: false
   default_timeout_s: 300
+  # Slice 39: every authorize() decision is audit-logged unless false.
+  audit: true
