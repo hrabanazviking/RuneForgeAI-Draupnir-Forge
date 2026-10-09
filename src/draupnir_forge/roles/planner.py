@@ -55,6 +55,7 @@ class ForgeTask:
     constraints: List[str] = field(default_factory=list)
     acceptance: List[str] = field(default_factory=list)
     verification: List[str] = field(default_factory=list)
+    notes: str = ""  # operator/re-grounding annotations; free text
 
     def __post_init__(self) -> None:
         if self.status not in VALID_STATUSES:
@@ -78,6 +79,7 @@ class ForgeTask:
             "constraints": list(self.constraints),
             "acceptance": list(self.acceptance),
             "verification": list(self.verification),
+            "notes": self.notes,
         }
 
     @classmethod
@@ -92,6 +94,7 @@ class ForgeTask:
             constraints=[str(c) for c in data.get("constraints", []) or []],
             acceptance=[str(a) for a in data.get("acceptance", []) or []],
             verification=[str(v) for v in data.get("verification", []) or []],
+            notes=str(data.get("notes", "") or ""),
         )
 
 
