@@ -21,6 +21,8 @@ only** — it is never re-executed.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -41,6 +43,43 @@ def _session_id_now() -> str:
 def _utc_now_iso() -> str:
     """Current UTC time as an ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically.
+
+    The content goes to a temp file in the same directory (same
+    filesystem, so the rename is atomic), is flushed and ``os.fsync``-ed,
+    then swapped over the target with ``os.replace``. A crash mid-write
+    can never leave a torn target behind, and no ``*.tmp`` files remain
+    after a normal write.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _append_text_atomic(path: Path, text: str) -> None:
+    """Append *text* to *path* atomically.
+
+    Reads the current content and rewrites the whole file via
+    :func:`_write_text_atomic`, so an interruption can never leave a
+    torn line at the tail of the file.
+    """
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    _write_text_atomic(path, existing + text)
 
 
 def _render_action(index: int, action: Dict[str, Any]) -> str:
@@ -99,9 +138,9 @@ class Session:
         session_id = self._unique_id(_session_id_now())
         session_dir = self._dir(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
-        (session_dir / "goal.md").write_text(
+        _write_text_atomic(
+            session_dir / "goal.md",
             f"# Session goal\n\n{goal}\n\n_started: {_utc_now_iso()}_\n",
-            encoding="utf-8",
         )
         self._current_id = session_id
         return session_id
@@ -125,8 +164,10 @@ class Session:
             )
         record = dict(action)
         record.setdefault("ts", _utc_now_iso())
-        with (session_dir / "actions.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _append_text_atomic(
+            session_dir / "actions.jsonl",
+            json.dumps(record, ensure_ascii=False) + "\n",
+        )
 
     def record_finding(self, text: str) -> None:
         """Append a timestamped finding line to ``findings.md``."""
@@ -135,8 +176,9 @@ class Session:
             raise TypeError(
                 f"finding must be a str, got {type(text).__name__}"
             )
-        with (session_dir / "findings.md").open("a", encoding="utf-8") as handle:
-            handle.write(f"- [{_utc_now_iso()}] {text}\n")
+        _append_text_atomic(
+            session_dir / "findings.md", f"- [{_utc_now_iso()}] {text}\n"
+        )
 
     def finish(self, result: Dict[str, Any]) -> None:
         """Write ``result.md`` with the session's outcome; closes the run."""
@@ -152,9 +194,7 @@ class Session:
             lines.append(str(value))
             lines.append("")
         lines.append(f"_finished: {_utc_now_iso()}_")
-        (session_dir / "result.md").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8"
-        )
+        _write_text_atomic(session_dir / "result.md", "\n".join(lines) + "\n")
         self._current_id = None
 
     def _require_current(self) -> Path:

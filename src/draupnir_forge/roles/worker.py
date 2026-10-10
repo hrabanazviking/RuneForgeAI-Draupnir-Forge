@@ -239,12 +239,18 @@ def _safe_target(project_dir: str, rel_path: str) -> str:
     return full
 
 
-def apply_patch(project_dir: str, patch_text: str) -> List[str]:
+def apply_patch(project_dir: str, patch_text: str, *, dry_run: bool = False) -> List[str]:
     """Apply a unified diff to the files under project_dir.
 
     Returns the list of changed relative paths (deletions included).
     Raises :class:`PatchError` on malformed patches, context mismatches,
     or paths that escape project_dir.
+
+    When ``dry_run`` is True, the patch is fully validated — malformed
+    patches, context mismatches, new-file collisions, and path escapes
+    all raise :class:`PatchError` exactly as a real application would —
+    but nothing is written, created, or deleted. The returned list is the
+    set of relative paths that *would* change.
     """
     file_patches = _parse_patch(patch_text)
     changed: List[str] = []
@@ -270,6 +276,12 @@ def apply_patch(project_dir: str, patch_text: str) -> List[str]:
                 old_text = fh.read()
             old_lines = old_text.splitlines()
             had_newline = old_text.endswith("\n") or not old_text
+
+        # Full validation: hunks must apply cleanly against current content.
+        _apply_hunks(old_lines, fp.hunks, display)
+        if dry_run:
+            changed.append(display)
+            continue
 
         new_lines, want_newline = _apply_hunks(old_lines, fp.hunks, display)
         if fp.old_path == _DEV_NULL:

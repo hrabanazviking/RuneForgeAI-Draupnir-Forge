@@ -105,5 +105,53 @@ class TestReplay(unittest.TestCase):
             self.assertEqual(Session(Path(tmp)).list_sessions(), [])
 
 
+class TestAtomicWrites(unittest.TestCase):
+    """Slice 8 (BATCH D): every session write is atomic — temp file in the
+    same directory, flush + fsync, then os.replace. No torn files, no
+    leftover *.tmp files after normal operation."""
+
+    def test_begin_record_20_actions_finish_leaves_no_tmp_and_valid_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            session = Session(Path(tmp))
+            session_id = session.begin("atomic saga")
+            for i in range(20):
+                session.record_action({"action": "forge", "detail": f"action {i}"})
+            session.record_finding("all twenty held fast")
+            session.finish({"result": "success"})
+
+            sdir = Path(tmp) / ".mythis" / "sessions" / session_id
+            # No temp files may remain after normal operation.
+            self.assertEqual(list(sdir.glob("*.tmp")), [])
+            self.assertEqual(list(sdir.parent.glob("*.tmp")), [])
+
+            # Every line of actions.jsonl parses as JSON, in order.
+            lines = (sdir / "actions.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 20)
+            for index, line in enumerate(lines):
+                record = json.loads(line)
+                self.assertEqual(record["action"], "forge")
+                self.assertEqual(record["detail"], f"action {index}")
+                self.assertIn("ts", record)
+
+            # Other session files round-trip intact.
+            goal = (sdir / "goal.md").read_text(encoding="utf-8")
+            self.assertIn("atomic saga", goal)
+            result = (sdir / "result.md").read_text(encoding="utf-8")
+            self.assertIn("success", result)
+            findings = (sdir / "findings.md").read_text(encoding="utf-8")
+            self.assertIn("all twenty held fast", findings)
+
+    def test_replay_still_reads_atomically_written_session(self) -> None:
+        with TemporaryDirectory() as tmp:
+            session = Session(Path(tmp))
+            session_id = session.begin("replay saga")
+            for i in range(20):
+                session.record_action({"action": "forge", "detail": f"action {i}"})
+            text = session.replay(session_id)
+            self.assertIn("1. forge", text)
+            self.assertIn("20. forge", text)
+            self.assertIn("action 19", text)
+
+
 if __name__ == "__main__":
     unittest.main()

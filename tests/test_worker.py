@@ -249,5 +249,99 @@ class TestForgeWorkerRun(unittest.TestCase):
         self.assertIsInstance(registry.create("forge_worker"), ForgeWorker)
 
 
+class TestApplyPatchDryRun(unittest.TestCase):
+    """Slice 10 (BATCH D): apply_patch(..., dry_run=True) validates fully
+    but never writes, creates, or deletes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.addCleanup(self.tmp.cleanup)
+
+    def _before_snapshot(self):
+        before = {}
+        for dirpath, _dirnames, filenames in os.walk(self.root):
+            for name in filenames:
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, self.root)
+                with open(full, "rb") as fh:
+                    before[rel] = fh.read()
+        return before
+
+    def test_valid_dry_run_returns_paths_and_leaves_tree_byte_identical(self):
+        _write(self.root, "a.txt", "line1\nline2\nline3\n")
+        patch = textwrap.dedent("""\
+            --- a/a.txt
+            +++ b/a.txt
+            @@ -1,3 +1,3 @@
+             line1
+            -line2
+            +LINE2
+             line3
+            --- /dev/null
+            +++ b/newdir/hello.txt
+            @@ -0,0 +1,2 @@
+            +hello
+            +world
+            """)
+        before = self._before_snapshot()
+        changed = apply_patch(self.root, patch, dry_run=True)
+        self.assertEqual(changed, ["a.txt", "newdir/hello.txt"])
+        # Target files byte-identical, nothing created.
+        self.assertEqual(self._before_snapshot(), before)
+        self.assertEqual(_read(self.root, "a.txt"), "line1\nline2\nline3\n")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "newdir")))
+
+    def test_dry_run_deletion_reports_path_without_deleting(self):
+        _write(self.root, "gone.txt", "bye\n")
+        patch = textwrap.dedent("""\
+            --- a/gone.txt
+            +++ /dev/null
+            @@ -1,1 +0,0 @@
+            -bye
+            """)
+        changed = apply_patch(self.root, patch, dry_run=True)
+        self.assertEqual(changed, ["gone.txt"])
+        self.assertEqual(_read(self.root, "gone.txt"), "bye\n")
+
+    def test_dry_run_malformed_patch_raises_and_tree_untouched(self):
+        _write(self.root, "a.txt", "alpha\n")
+        before = self._before_snapshot()
+        with self.assertRaises(PatchError):
+            apply_patch(self.root, "this is not a diff\n", dry_run=True)
+        with self.assertRaises(PatchError):
+            apply_patch(self.root, "", dry_run=True)
+        self.assertEqual(self._before_snapshot(), before)
+
+    def test_dry_run_context_mismatch_raises_and_tree_untouched(self):
+        _write(self.root, "a.txt", "alpha\nbeta\n")
+        before = self._before_snapshot()
+        patch = textwrap.dedent("""\
+            --- a/a.txt
+            +++ b/a.txt
+            @@ -1,2 +1,2 @@
+             alpha
+            -GAMMA
+            +delta
+            """)
+        with self.assertRaises(PatchError):
+            apply_patch(self.root, patch, dry_run=True)
+        self.assertEqual(self._before_snapshot(), before)
+        self.assertEqual(_read(self.root, "a.txt"), "alpha\nbeta\n")
+
+    def test_dry_run_path_escape_raises_and_creates_nothing(self):
+        patch = textwrap.dedent("""\
+            --- /dev/null
+            +++ b/../escape.txt
+            @@ -0,0 +1 @@
+            +evil
+            """)
+        with self.assertRaises(PatchError):
+            apply_patch(self.root, patch, dry_run=True)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "escape.txt")))
+        parent = os.path.dirname(self.root.rstrip(os.sep))
+        self.assertFalse(os.path.exists(os.path.join(parent, "escape.txt")))
+
+
 if __name__ == "__main__":
     unittest.main()

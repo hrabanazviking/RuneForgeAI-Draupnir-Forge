@@ -113,9 +113,10 @@ def _read_ledger(path: Path) -> dict[str, Any]:
             "tokens_used": int(data.get("tokens_used", 0)),
             "cost_usd": float(data.get("cost_usd", 0.0)),
             "tasks_completed": int(data.get("tasks_completed", 0)),
+            "warned": bool(data.get("warned", False)),
         }
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return {"tokens_used": 0, "cost_usd": 0.0, "tasks_completed": 0}
+        return {"tokens_used": 0, "cost_usd": 0.0, "tasks_completed": 0, "warned": False}
 
 
 def _write_ledger_atomic(path: Path, ledger: dict[str, Any]) -> None:
@@ -170,6 +171,10 @@ class Budget:
         self._tokens_used: int = ledger["tokens_used"]
         self._cost_usd: float = ledger["cost_usd"]
         self._tasks_completed: int = ledger["tasks_completed"]
+        # One-shot near-exhaustion flag: True once check_warning() has
+        # fired. Persisted in the ledger so a re-created Budget does not
+        # re-warn after a restart.
+        self.warned: bool = ledger["warned"]
 
     # -- pricing ---------------------------------------------------------
     def price_for(self, model: str) -> dict[str, float]:
@@ -259,6 +264,38 @@ class Budget:
         """True when either cap has been reached or passed."""
         return self._tokens_used >= self.max_tokens or self._cost_usd >= self.max_cost_usd
 
+    def is_near_exhausted(self, threshold: float = 0.8) -> bool:
+        """True when token usage or cost reaches ``threshold`` of its cap.
+
+        Args:
+            threshold: Fraction (0..1) of a cap that counts as
+                near-exhausted. Default 0.8 (80%).
+
+        A zero (or otherwise missing) cap never reports near-exhausted on
+        that dimension — only the live cap guards.
+        """
+        max_tokens = self.max_tokens or 0
+        max_cost = self.max_cost_usd or 0.0
+        near_tokens = max_tokens > 0 and self._tokens_used / max_tokens >= threshold
+        near_cost = max_cost > 0 and self._cost_usd / max_cost >= threshold
+        return bool(near_tokens or near_cost)
+
+    def check_warning(self, threshold: float = 0.8) -> bool:
+        """One-shot near-exhaustion signal for the orchestrator.
+
+        Returns True exactly once — on the first call that finds the
+        budget near-exhausted (it sets ``warned`` and persists it). Later
+        calls return False, so the orchestrator emits one warning and no
+        more. Returns False while the budget is comfortably below the
+        threshold.
+        """
+        if self.is_near_exhausted(threshold):
+            if not self.warned:
+                self.warned = True
+                self._persist()
+                return True
+        return False
+
     def _persist(self) -> None:
         _write_ledger_atomic(
             self._file,
@@ -266,6 +303,7 @@ class Budget:
                 "tokens_used": self._tokens_used,
                 "cost_usd": self._cost_usd,
                 "tasks_completed": self._tasks_completed,
+                "warned": self.warned,
             },
         )
 
@@ -284,4 +322,6 @@ class Budget:
             f"Remaining: {self.remaining_tokens:,} tokens, ${self.remaining_usd:,.2f}",
             f"Status: {status}",
         ]
+        if self.is_near_exhausted():
+            lines.append("WARNING: budget near exhaustion")
         return "\n".join(lines)

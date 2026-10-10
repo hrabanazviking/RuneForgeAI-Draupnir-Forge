@@ -192,5 +192,52 @@ class TestFallbackPrices(BudgetTestBase):
         self.assertAlmostEqual(cost, 0.00015 + 0.0006, places=9)
 
 
+class TestNearExhaustion(BudgetTestBase):
+    """Slice 9 (BATCH D): is_near_exhausted / one-shot check_warning /
+    report() WARNING line."""
+
+    def test_fresh_budget_not_near_exhausted(self):
+        budget = self.make_budget()
+        self.assertFalse(budget.is_near_exhausted())
+        self.assertFalse(budget.warned)
+        self.assertFalse(budget.check_warning())
+        self.assertNotIn("WARNING", budget.report())
+
+    def test_85_percent_tokens_fires_warning_once(self):
+        budget = Budget(self.project, max_tokens=1000, max_cost_usd=100.0)
+        # ollama prices at zero, so only the token cap moves.
+        budget.charge("ollama", 850, 0)
+        self.assertTrue(budget.is_near_exhausted())
+        self.assertTrue(budget.check_warning())  # fires
+        self.assertFalse(budget.check_warning())  # then silent forever
+        self.assertTrue(budget.warned)
+        self.assertIn("WARNING", budget.report())
+        self.assertIn("budget near exhaustion", budget.report())
+
+    def test_cost_cap_drives_near_exhaustion(self):
+        budget = Budget(self.project, max_tokens=10_000_000, max_cost_usd=1.0)
+        # gpt-4o-mini: 1000 in @ 0.00015 + 1000 out @ 0.0006 = 0.00075/charge.
+        for _ in range(1200):
+            budget.charge("gpt-4o-mini", 1000, 1000)
+        self.assertTrue(budget.is_near_exhausted())
+        self.assertTrue(budget.check_warning())
+
+    def test_zero_cap_dimension_never_near_exhausted(self):
+        budget = Budget(self.project, max_tokens=0, max_cost_usd=0.0)
+        # Even with usage piled up, a zero cap must not divide-by-zero or
+        # claim near-exhaustion on that dimension.
+        budget._tokens_used = 12345  # noqa: SLF001 — white-box guard check
+        self.assertFalse(budget.is_near_exhausted())
+        self.assertFalse(budget.check_warning())
+
+    def test_warn_survives_reload(self):
+        budget = Budget(self.project, max_tokens=1000, max_cost_usd=100.0)
+        budget.charge("ollama", 850, 0)
+        self.assertTrue(budget.check_warning())
+        reloaded = Budget(self.project, max_tokens=1000, max_cost_usd=100.0)
+        self.assertTrue(reloaded.warned)
+        self.assertFalse(reloaded.check_warning())
+
+
 if __name__ == "__main__":
     unittest.main()
