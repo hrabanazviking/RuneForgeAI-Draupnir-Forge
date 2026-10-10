@@ -14,6 +14,13 @@ model:
   # Providers tried in order after repeated 5xx/network failures on the
   # primary (slice 44). Empty = stay on the primary provider.
   fallback_providers: []
+  # Slice 6: cap (seconds) on waits derived from a 429 Retry-After header.
+  max_retry_after_s: 60.0
+  # Slice 7: per-provider circuit breaker — after this many consecutive
+  # failures a provider is skipped until cooldown_s seconds have passed.
+  circuit_breaker:
+    failures: 5
+    cooldown_s: 300
 
 # --- token / cost budget (slice 8) ---
 budget:
@@ -38,5 +45,7 @@ tools:
   allow_network: false
   allow_destructive: false
   default_timeout_s: 300
+  # Slice 12: per-stream cap on captured command output (bytes).
+  max_output_bytes: 1048576
   # Slice 39: every authorize() decision is audit-logged unless false.
   audit: true

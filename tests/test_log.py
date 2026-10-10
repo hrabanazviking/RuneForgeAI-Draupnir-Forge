@@ -21,6 +21,7 @@ from draupnir_forge.log import (
     bind_role,
     configure_file_logging,
     get_logger,
+    redact_secrets,
 )
 
 
@@ -209,6 +210,80 @@ class TestBindRole(LoggingIsolationTestCase):
     def test_bind_role_returns_adapter(self):
         logger = get_logger(self.unique_name("adapter"))
         self.assertIsInstance(bind_role(logger, "Heimdallr"), logging.LoggerAdapter)
+
+
+class TestRedactSecrets(unittest.TestCase):
+    """Slice 20: secret-looking tokens are masked, prose is untouched."""
+
+    def test_redacts_openai_style_key(self):
+        self.assertEqual(
+            redact_secrets("key is sk-abcDEF1234567890_- end"),
+            "key is ***REDACTED*** end",
+        )
+
+    def test_redacts_github_token(self):
+        self.assertEqual(
+            redact_secrets("token ghp_abcdefgh1234567890"),
+            "token ***REDACTED***",
+        )
+
+    def test_redacts_slack_token(self):
+        self.assertEqual(
+            redact_secrets("xoxb-1234-5678-abcdefghij connected"),
+            "***REDACTED*** connected",
+        )
+
+    def test_redacts_aws_access_key_id(self):
+        self.assertEqual(
+            redact_secrets("using AKIAIOSFODNN7EXAMPLE now"),
+            "using ***REDACTED*** now",
+        )
+
+    def test_redacts_bearer_token(self):
+        self.assertEqual(
+            redact_secrets("Authorization: Bearer hunter2token99"),
+            "Authorization: ***REDACTED***",
+        )
+
+    def test_redacts_labeled_api_key(self):
+        self.assertEqual(
+            redact_secrets("config had api_key = supersecret1"),
+            "config had ***REDACTED***",
+        )
+
+    def test_redacts_labeled_password_case_insensitive(self):
+        self.assertEqual(
+            redact_secrets("Password=hunter2 here"),
+            "***REDACTED*** here",
+        )
+        self.assertEqual(
+            redact_secrets("API_KEY = abcdefgh"),
+            "***REDACTED***",
+        )
+
+    def test_redacts_multiple_secrets_in_one_line(self):
+        self.assertEqual(
+            redact_secrets("api_key=x12345678 and sk-abcdefghijklmnop"),
+            "***REDACTED*** and ***REDACTED***",
+        )
+
+    def test_non_string_returned_as_is(self):
+        self.assertIsNone(redact_secrets(None))
+        self.assertEqual(redact_secrets(123), 123)
+        self.assertEqual(redact_secrets(["sk-abcdefgh"]), ["sk-abcdefgh"])
+
+    def test_normal_prose_untouched(self):
+        prose = (
+            "The quick brown fox jumps over the lazy dog. "
+            "A bearer of good tidings walked through the password-protected "
+            "gatehouse, carrying no api key at all."
+        )
+        self.assertEqual(redact_secrets(prose), prose)
+
+    def test_short_lookalikes_not_redacted(self):
+        # Below the 8-char minimum: left alone.
+        self.assertEqual(redact_secrets("sk-abc12"), "sk-abc12")
+        self.assertEqual(redact_secrets("ghp_ab12"), "ghp_ab12")
 
 
 class TestLibraryHygiene(unittest.TestCase):

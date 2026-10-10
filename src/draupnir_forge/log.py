@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from . import _paths
 
@@ -27,6 +28,50 @@ LOGGING_DATA_FILE = "logging.yaml"
 _CONSOLE_READY_ATTR = "_draupnir_console_ready"
 
 _settings_cache: Optional[dict] = None
+
+# ---------------------------------------------------------------------------
+# Secret redaction (slice 20)
+# ---------------------------------------------------------------------------
+# Secret-looking tokens are masked before they can reach a log line or an
+# exception message. Patterns are data-ish on purpose: one list, one
+# marker, no branching per secret kind.
+REDACTED_MARKER = "***REDACTED***"
+
+_SECRET_PATTERNS = [
+    # (pattern, flags)
+    (r"sk-[A-Za-z0-9_-]{8,}", 0),  # OpenAI-style keys
+    (r"ghp_[A-Za-z0-9]{8,}", 0),  # GitHub personal access tokens
+    (r"xoxb-[A-Za-z0-9-]{8,}", 0),  # Slack bot tokens
+    (r"AKIA[0-9A-Z]{16}", 0),  # AWS access key IDs
+    (r"Bearer\s+\S+", 0),  # Authorization: Bearer <token>
+    (r"api_key\s*=\s*\S+", re.IGNORECASE),  # labeled secrets
+    (r"password\s*=\s*\S+", re.IGNORECASE),
+]
+_SECRET_RES = [re.compile(pattern, flags) for pattern, flags in _SECRET_PATTERNS]
+
+
+def redact_secrets(text: str) -> str:
+    """Mask secret-looking tokens in *text* with ``***REDACTED***``.
+
+    Recognizes OpenAI-style (``sk-…``), GitHub (``ghp_…``), Slack
+    (``xoxb-…``), and AWS (``AKIA…``) tokens, ``Bearer <token>``
+    credentials, and ``api_key=`` / ``password=`` assignments
+    (case-insensitive). Non-string input is returned unchanged, and
+    ordinary prose passes through untouched.
+
+    Args:
+        text: The text to scrub.
+
+    Returns:
+        The text with secrets replaced, or the input as-is when it is
+        not a string.
+    """
+    if not isinstance(text, str):
+        return text
+    scrubbed = text
+    for regex in _SECRET_RES:
+        scrubbed = regex.sub(REDACTED_MARKER, scrubbed)
+    return scrubbed
 
 
 def _settings() -> dict:

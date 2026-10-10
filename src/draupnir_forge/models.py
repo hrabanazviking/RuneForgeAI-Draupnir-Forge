@@ -1,4 +1,4 @@
-"""models.py — Model router (slices 23 + 44).
+"""models.py — Model router (slices 23 + 44 + 6 + 7 + 20).
 
 Muninn carries the question to the right mind and brings the answer
 back. :class:`ModelRouter` speaks to any OpenAI-compatible chat API
@@ -30,16 +30,19 @@ crashing silently.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
 import time
 import urllib.error
 import urllib.request
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from draupnir_forge import _paths
 from draupnir_forge.budget import Budget
+from draupnir_forge.log import redact_secrets
 
 log = logging.getLogger("draupnir_forge.models")
 
@@ -53,7 +56,52 @@ class ModelError(Exception):
 
 
 class _RetryableError(Exception):
-    """HTTP 5xx or network failure: worth retrying / falling back."""
+    """HTTP 5xx/429 or network failure: worth retrying / falling back.
+
+    Slice 6: carries ``retry_after`` — the wait in seconds parsed from
+    the server's ``Retry-After`` header, or ``None`` when the response
+    carried none (the configured backoff is used instead).
+    """
+
+    def __init__(
+        self, message: str = "", retry_after: Optional[float] = None
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(headers: Any) -> Optional[float]:
+    """Parse a ``Retry-After`` header into seconds.
+
+    Accepts integer seconds (``120``) or an HTTP-date
+    (``Wed, 21 Oct 2015 07:28:00 GMT``); a date in the past yields 0.
+    Returns ``None`` when the header is absent or unparseable — the
+    caller then falls back to its configured backoff.
+    """
+    get = getattr(headers, "get", None)
+    if not callable(get):
+        return None
+    raw = get("Retry-After")
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        moment = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if moment.tzinfo is None:
+        # HTTP-dates are GMT by definition.
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    delta = (
+        moment - datetime.datetime.now(datetime.timezone.utc)
+    ).total_seconds()
+    return max(0.0, delta)
 
 
 # ---------------------------------------------------------------------------
@@ -165,23 +213,68 @@ class ModelRouter:
         raw_backoff = retry.get("backoff_seconds", [1.0]) or [1.0]
         self._backoffs = [float(b) for b in raw_backoff]
         self._timeout_s = float(config.get("model.timeout_s", 120))
+        # Slice 6: never wait longer than this for a Retry-After header.
+        self._max_retry_after_s = float(
+            config.get("model.max_retry_after_s", 60.0)
+        )
+        # Slice 7: per-provider circuit breaker state. A provider whose
+        # consecutive failure count reaches the threshold is skipped by
+        # provider_chain() until the cooldown elapses; any success
+        # resets its counter.
+        self._cb_threshold = int(
+            config.get("model.circuit_breaker.failures", 5)
+        )
+        self._cb_cooldown_s = float(
+            config.get("model.circuit_breaker.cooldown_s", 300)
+        )
+        self._cb_failures: Dict[str, int] = {}
+        self._cb_last_failure: Dict[str, float] = {}
         # Eager validation: a misconfigured primary provider fails here
         # with a clear error instead of mid-run.
         _resolve_provider(config, self.provider)
         # Swappable in tests to avoid real sleeping.
         self._sleep = time.sleep
+        # Swappable clock for tests (slice 7): monotonic by default so
+        # wall-clock jumps never corrupt cooldown timing.
+        self._now = time.monotonic
 
     def provider_chain(self) -> List[str]:
         """Ordered provider names tried by :meth:`complete`.
 
         The primary provider first, then ``model.fallback_providers``
         with duplicates removed (the primary is never retried).
+
+        Slice 7: providers whose circuit breaker is open (too many
+        consecutive failures, still inside the cooldown) are skipped.
         """
         chain = [self.provider]
         for name in self._fallback_providers:
             if name not in chain:
                 chain.append(name)
-        return chain
+        return [name for name in chain if self._provider_available(name)]
+
+    def _provider_available(self, provider: str) -> bool:
+        """True unless *provider*'s circuit is open (cooling down).
+
+        The circuit opens after ``model.circuit_breaker.failures``
+        consecutive failures and closes again once
+        ``model.circuit_breaker.cooldown_s`` seconds have passed since
+        the last failure. Timed with :func:`time.monotonic` (see
+        ``self._now``) so wall-clock jumps cannot corrupt it.
+        """
+        if self._cb_failures.get(provider, 0) < self._cb_threshold:
+            return True
+        last = self._cb_last_failure.get(provider, 0.0)
+        return (self._now() - last) >= self._cb_cooldown_s
+
+    def _record_failure(self, provider: str) -> None:
+        """Count one consecutive failure for *provider*."""
+        self._cb_failures[provider] = self._cb_failures.get(provider, 0) + 1
+        self._cb_last_failure[provider] = self._now()
+
+    def _record_success(self, provider: str) -> None:
+        """Reset *provider*'s consecutive failure count after a success."""
+        self._cb_failures[provider] = 0
 
     # -- data ------------------------------------------------------------
     @staticmethod
@@ -236,9 +329,13 @@ class ModelRouter:
         Walks the provider chain from :meth:`provider_chain`: on each
         provider the role's model (plus fallbacks, with per-provider
         name tables when defined) is tried with retries and backoff.
-        When a provider is exhausted by repeated HTTP 5xx / network
-        failures, the router fails over to the next provider in
-        ``model.fallback_providers``. Usage is charged to the budget.
+        When a provider is exhausted by repeated HTTP 5xx / 429 /
+        network failures, the router fails over to the next provider in
+        ``model.fallback_providers``. HTTP 429 responses honor the
+        server's ``Retry-After`` hint, capped at
+        ``model.max_retry_after_s``. Providers whose circuit breaker is
+        open (too many consecutive failures, still cooling down) are
+        skipped. Usage is charged to the budget.
 
         Args:
             messages: OpenAI-style ``[{"role": ..., "content": ...}]``.
@@ -255,6 +352,12 @@ class ModelRouter:
             BudgetExhausted: When charging the usage would blow a cap.
         """
         chain = self.provider_chain()
+        if not chain:
+            raise ModelError(
+                "All model providers are circuit-broken (cooling down "
+                f"after repeated failures); role {role!r} cannot be served "
+                "right now."
+            )
         last_error: Optional[Exception] = None
         for position, provider in enumerate(chain):
             try:
@@ -286,6 +389,8 @@ class ModelRouter:
                         )
                     except _RetryableError as exc:
                         last_error = exc
+                        # Slice 7: feed the per-provider circuit breaker.
+                        self._record_failure(provider)
                         if attempt < self._attempts_per_model - 1:
                             next_step = "backing off"
                         elif attempt_model != models[-1]:
@@ -304,8 +409,18 @@ class ModelRouter:
                         )
                         if attempt < self._attempts_per_model - 1:
                             index = min(attempt, len(self._backoffs) - 1)
-                            self._sleep(self._backoffs[index])
+                            wait = self._backoffs[index]
+                            # Slice 6: honor the server's Retry-After,
+                            # never waiting longer than the configured
+                            # cap (model.max_retry_after_s).
+                            if exc.retry_after is not None:
+                                wait = min(
+                                    float(exc.retry_after),
+                                    self._max_retry_after_s,
+                                )
+                            self._sleep(wait)
                         continue
+                    self._record_success(provider)
                     self._charge(attempt_model, in_tok, out_tok)
                     if position > 0:
                         log.warning(
@@ -335,7 +450,7 @@ class ModelRouter:
         ``Authorization`` header is sent.
 
         Raises:
-            _RetryableError: HTTP 5xx or network-level failure.
+            _RetryableError: HTTP 5xx, HTTP 429, or network-level failure.
             ModelError: HTTP 4xx or a malformed response body.
         """
         payload = {
@@ -362,11 +477,23 @@ class ModelRouter:
             ) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                # Slice 6: rate limiting is retryable — honor the
+                # server's Retry-After hint via _RetryableError.
+                raise _RetryableError(
+                    f"HTTP 429 rate limited for model {model!r}",
+                    retry_after=_parse_retry_after(exc.headers),
+                ) from exc
             if 500 <= exc.code < 600:
                 raise _RetryableError(f"HTTP {exc.code}") from exc
             raise ModelError(
-                f"Model API returned HTTP {exc.code} for model {model!r}; "
-                "check the model name, provider, and API key."
+                # Slice 20: scrub anything secret-looking from the
+                # message before it can reach a log line.
+                redact_secrets(
+                    f"Model API returned HTTP {exc.code} for model "
+                    f"{model!r}; check the model name, provider, and API "
+                    "key."
+                )
             ) from exc
         except (urllib.error.URLError, OSError) as exc:
             raise _RetryableError(f"network error: {exc}") from exc

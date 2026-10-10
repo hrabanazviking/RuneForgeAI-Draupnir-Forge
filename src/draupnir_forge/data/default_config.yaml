@@ -38,5 +38,7 @@ tools:
   allow_network: false
   allow_destructive: false
   default_timeout_s: 300
+  # Slice 12: per-stream cap on captured command output (bytes).
+  max_output_bytes: 1048576
   # Slice 39: every authorize() decision is audit-logged unless false.
   audit: true

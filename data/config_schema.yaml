@@ -31,6 +31,15 @@ constraints:
   model.fallback_providers:
     type: list
     allowed_items: [openai, ollama, custom]
+  model.max_retry_after_s:
+    type: float
+    min: 0
+  model.circuit_breaker.failures:
+    type: int
+    min: 1
+  model.circuit_breaker.cooldown_s:
+    type: float
+    min: 0
   budget.max_tokens:
     type: int
     min: 1
@@ -51,6 +60,9 @@ constraints:
   tools.allow_destructive:
     type: bool
   tools.default_timeout_s:
+    type: int
+    min: 1
+  tools.max_output_bytes:
     type: int
     min: 1
   tools.audit:
