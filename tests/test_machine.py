@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime
 
 from draupnir_forge.events import EventLog, EventType
 from draupnir_forge.machine import (
@@ -179,6 +180,65 @@ class TestForgeMachine(unittest.TestCase):
                          EventType.HUMAN_DECISION_REQUESTED)
         self.assertEqual(STATE_EVENT_MAP["PROJECT_COMPLETE"],
                          EventType.PROJECT_COMPLETED)
+
+
+class TestTransitionAudit(unittest.TestCase):
+    """Slice 17: ForgeMachine.recent_transitions() audit trail."""
+
+    def test_successful_transitions_recorded_in_order(self):
+        with temp_project() as project:
+            machine = ForgeMachine(project)
+            machine.go("DISCOVERY")
+            machine.go("DEFINITION")
+            machine.go("ARCHITECTURE")
+
+            trail = machine.recent_transitions()
+            self.assertEqual(
+                [(entry["from"], entry["to"]) for entry in trail],
+                [("INTAKE", "DISCOVERY"),
+                 ("DISCOVERY", "DEFINITION"),
+                 ("DEFINITION", "ARCHITECTURE")])
+            for entry in trail:
+                self.assertEqual(set(entry.keys()),
+                                 {"from", "to", "ts"})
+                # Must be a parseable UTC ISO timestamp.
+                ts = datetime.fromisoformat(entry["ts"])
+                self.assertIsNotNone(ts.tzinfo)
+
+    def test_illegal_transition_not_recorded(self):
+        with temp_project() as project:
+            machine = ForgeMachine(project)
+            machine.go("DISCOVERY")
+            with self.assertRaises(IllegalTransition):
+                machine.go("IMPLEMENTING")  # DISCOVERY -> IMPLEMENTING illegal
+            trail = machine.recent_transitions()
+            self.assertEqual(len(trail), 1)
+            self.assertEqual((trail[0]["from"], trail[0]["to"]),
+                             ("INTAKE", "DISCOVERY"))
+
+    def test_same_state_noop_not_recorded(self):
+        with temp_project() as project:
+            machine = ForgeMachine(project)
+            machine.go("INTAKE")  # no-op, not a real move
+            self.assertEqual(machine.recent_transitions(), [])
+
+    def test_trail_capped_at_thirty_two(self):
+        with temp_project() as project:
+            machine = ForgeMachine(project)
+            machine.go("DISCOVERY")
+            machine.go("DEFINITION")
+            # HUMAN_DECISION is a legal out-of-band move from any state,
+            # and HUMAN_DECISION -> DEFINITION is in the table, giving a
+            # two-node cycle to hammer the trail with.
+            for _ in range(20):
+                machine.go("HUMAN_DECISION")
+                machine.go("DEFINITION")
+            trail = machine.recent_transitions()
+            self.assertEqual(len(trail), 32)
+            self.assertEqual((trail[-1]["from"], trail[-1]["to"]),
+                             ("HUMAN_DECISION", "DEFINITION"))
+            self.assertEqual((trail[-2]["from"], trail[-2]["to"]),
+                             ("DEFINITION", "HUMAN_DECISION"))
 
 
 if __name__ == "__main__":

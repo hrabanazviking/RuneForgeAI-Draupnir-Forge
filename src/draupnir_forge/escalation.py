@@ -10,6 +10,9 @@ Public surface:
     request_escalation(project_dir, question, context) -> path written
     answer_escalation(project_dir, answer) -> {"answer":..., "question":...}
     has_pending(project_dir) -> bool
+    pending_age_seconds(project_dir) -> Optional[float]
+    is_stale(project_dir, ttl_s) -> bool
+    discard_stale_escalation(project_dir, ttl_s) -> bool
     Escalation — persisted record of one escalation round-trip.
 """
 
@@ -333,6 +336,86 @@ def _awaiting_path(project_dir: str) -> str:
 def has_pending(project_dir: str) -> bool:
     """True when a question is currently awaiting a human answer."""
     return os.path.isfile(_awaiting_path(project_dir))
+
+
+def _asked_timestamp(project_dir: str) -> Optional[str]:
+    """The raw ``Asked (UTC):`` value from the awaiting file, or None."""
+    try:
+        with open(_awaiting_path(project_dir), "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("Asked (UTC):"):
+                    return line.split(":", 1)[1].strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def pending_age_seconds(project_dir: str) -> Optional[float]:
+    """Age in seconds of the pending escalation's question.
+
+    Parses the ``Asked (UTC):`` ISO timestamp from
+    ``.mythis/awaiting_human.md`` and measures it against now (UTC).
+    Returns ``None`` when no awaiting file exists or the timestamp
+    cannot be parsed. Never raises.
+    """
+    raw = _asked_timestamp(project_dir)
+    if not raw:
+        return None
+    try:
+        asked = datetime.fromisoformat(raw)
+    except ValueError:
+        # One fallback for ISO variants fromisoformat rejects; then
+        # give up with None rather than raising.
+        try:
+            asked = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            return None
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if asked.tzinfo is None:
+        asked = asked.replace(tzinfo=timezone.utc)
+    try:
+        return (datetime.now(timezone.utc) - asked).total_seconds()
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def is_stale(project_dir: str, ttl_s: float) -> bool:
+    """True when the pending escalation is older than ``ttl_s`` seconds.
+
+    False when nothing is pending (or the age is unknowable).
+    Never raises.
+    """
+    age = pending_age_seconds(project_dir)
+    return age is not None and age >= ttl_s
+
+
+def discard_stale_escalation(project_dir: str, ttl_s: float) -> bool:
+    """Discard a stale pending escalation; True when one was discarded.
+
+    Deletes the awaiting file and appends a
+    ``{"event": "discarded", "asked_at": ..., "discarded_at": ...}``
+    record to ``.mythis/escalations.jsonl``. Returns False (touching
+    nothing) when no stale escalation is pending. Never raises —
+    failures are logged as warnings.
+    """
+    try:
+        if not is_stale(project_dir, ttl_s):
+            return False
+        asked_at = _asked_timestamp(project_dir)
+        os.remove(_awaiting_path(project_dir))
+        record = {
+            "event": "discarded",
+            "asked_at": asked_at,
+            "discarded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        log_path = os.path.join(_mythis_dir(project_dir), ESCALATIONS_LOG)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str) + "\n")
+        return True
+    except Exception as exc:
+        _LOG.warning("escalation: discard_stale_escalation failed: %s", exc)
+        return False
 
 
 def _render_context(context: Dict[str, Any]) -> str:

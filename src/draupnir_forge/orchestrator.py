@@ -23,7 +23,8 @@ deterministic: roles may deliberate, but the machine governs.
 Result of :meth:`Orchestrator.run`::
 
     {"status": "complete" | "paused" | "blocked",
-     "tasks_done": <int>, "cycles": <int>, "state": <final state>}
+     "tasks_done": <int>, "cycles": <int>, "state": <final state>,
+     "summary": <one-line human-readable run summary>}
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .events import EventLog, EventType, utc_now_iso
+from .escalation import discard_stale_escalation, is_stale
 from .failures import FailureClass, FailureRecord, classify_failure, escalation_for
 from .machine import ForgeMachine, IllegalTransition, STATE_ROLE_MAP
 from .roles.base import (
@@ -116,6 +118,7 @@ class Orchestrator:
         self._artifacts: Dict[str, Any] = {}
         self._current_task: Optional[ForgeTask] = None
         self._failures: List[FailureRecord] = []
+        self._escalations: List[str] = []  # human-escalation requests seen
         self._history: List[Dict[str, Any]] = []  # heimdallr's watch-list
         self._repair_attempts: Dict[str, int] = {}
         self._replans: Dict[str, int] = {}
@@ -165,9 +168,14 @@ class Orchestrator:
 
         Returns:
             ``{"status": "complete"|"paused"|"blocked", "tasks_done": n,
-            "cycles": n, "state": <final state>}``.
+            "cycles": n, "state": <final state>,
+            "summary": <one-line human-readable run summary>}``.
         """
         self._reset_run_state()
+        # Heimdallr sweeps stale human-escalation questions before the
+        # loop: an unanswered question older than the TTL is discarded
+        # so a dead await never blocks the run (slice 5).
+        self._sweep_stale_escalation()
         machine = self._machine
         if machine.is_terminal():
             return self._result("complete")
@@ -225,6 +233,7 @@ class Orchestrator:
         self._artifacts = {}
         self._current_task = None
         self._failures = []
+        self._escalations = []
         self._history = []
         self._repair_attempts = {}
         self._replans = {}
@@ -240,7 +249,32 @@ class Orchestrator:
             "tasks_done": self._tasks_done,
             "cycles": self._cycles,
             "state": self._machine.current(),
+            "summary": self._run_summary(status),
         }
+
+    def _run_summary(self, status: str) -> str:
+        """One-line human-readable summary of the run.
+
+        Built from values the run already tracks: completed tasks,
+        distinct tasks that failed at least once, escalation requests
+        witnessed, and the budget ledger's spent cost.
+        """
+        failed_tasks = len({f.task_id for f in self._failures if f.task_id})
+        return (
+            f"run {status}: {self._tasks_done} tasks complete, "
+            f"{failed_tasks} failed, {len(self._escalations)} escalations, "
+            f"budget ${self._spent_cost():.4f}"
+        )
+
+    def _spent_cost(self) -> float:
+        """USD spent per the budget ledger; 0.0 when it is unavailable."""
+        try:
+            cost = getattr(self._budget, "cost_usd", 0.0)
+            if callable(cost):
+                cost = cost()
+            return float(cost or 0.0)
+        except Exception:
+            return 0.0
 
     # -- completion rites ---------------------------------------------------
 
@@ -348,6 +382,7 @@ class Orchestrator:
             return None
         self._emit(EventType.INVARIANT_VIOLATED, "heimdallr",
                    {"escalations": list(escalations)})
+        self._escalations.extend(escalations)  # tracked for the summary
         task_id = self._current_task.task_id if self._current_task else ""
         failures_here = sum(
             1 for f in self._failures if f.task_id == task_id
@@ -409,6 +444,28 @@ class Orchestrator:
         if isinstance(result.artifacts, dict):
             self._artifacts.update(result.artifacts)
         return result
+
+    def _sweep_stale_escalation(self) -> None:
+        """Discard a stale pending escalation so it cannot block the run.
+
+        The TTL comes from config key ``escalation.stale_after_s``
+        (default 86400s); any config problem falls back to the default.
+        On discard, Heimdallr emits a warning event. The run always
+        proceeds afterwards — a dead await never blocks it.
+        """
+        try:
+            ttl_s = float(
+                self._config.get("escalation.stale_after_s", 86400)
+            )
+        except Exception:
+            ttl_s = 86400.0
+        if discard_stale_escalation(self._project_dir, ttl_s):
+            # HUMAN_DECISION_REQUESTED is the closest member of the
+            # closed EventType set (§29); the payload marks it as a
+            # discard, not a new request.
+            self._emit(EventType.HUMAN_DECISION_REQUESTED, "Heimdallr",
+                       {"reason": "stale_escalation_discarded",
+                        "stale_after_s": ttl_s})
 
     def _emit(self, event_type: EventType, actor: str,
               payload: Dict[str, Any]) -> None:
@@ -655,6 +712,7 @@ class Orchestrator:
         detail = f"{stage}: {result.summary}"
         if result.escalation:
             detail += f" | escalation: {result.escalation}"
+            self._escalations.append(result.escalation)  # summary counts it
         self._failures.append(FailureRecord(
             failure_class=failure_class, task_id=task_id, detail=detail,
         ))

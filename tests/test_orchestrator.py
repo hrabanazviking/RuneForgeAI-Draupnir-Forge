@@ -6,13 +6,16 @@ the failure ladder, and the pause paths.
 """
 
 import json
+import re
 import shutil
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from draupnir_forge import escalation as esc
 from draupnir_forge.events import EventLog, EventType
 from draupnir_forge.orchestrator import Orchestrator
 from draupnir_forge.roles.base import Role, RoleContext, RoleRegistry, RoleResult
@@ -234,6 +237,52 @@ class TestOrchestratorRepairLadder(unittest.TestCase):
                          "awaiting_human.md").read_text(encoding="utf-8")
             self.assertIn("already revised the roadmap once", text)
 
+class TestRunResultSummary(unittest.TestCase):
+    """Slice 19: run() returns a human-readable one-line summary."""
+
+    def test_summary_on_blocked_run_mentions_status(self):
+        reg = happy_registry()
+        with temp_project() as project:
+            orch = Orchestrator(project, role_registry=reg)
+            result = orch.run("a trivial goal", max_cycles=1)
+            self.assertEqual(result["status"], "blocked")
+            self.assertIn("summary", result)
+            self.assertIsInstance(result["summary"], str)
+            self.assertIn("blocked", result["summary"])
+            self.assertIn("0 tasks complete", result["summary"])
+
+    def test_summary_counts_completed_tasks(self):
+        reg = happy_registry(planner_behavior=one_task_planner)
+        with temp_project() as project:
+            orch = Orchestrator(project, role_registry=reg)
+            result = orch.run("a trivial goal", max_cycles=80)
+            self.assertEqual(result["status"], "complete")
+            self.assertIn("complete", result["summary"])
+            self.assertIn("1 tasks complete", result["summary"])
+            self.assertIn("budget $", result["summary"])
+
+    def test_summary_counts_failures_and_escalations(self):
+        # A verifier that demands the human: one failed task, one
+        # genuine escalation request, and a paused status in the summary.
+        reg = happy_registry(planner_behavior=one_task_planner)
+        reg._roles.pop("verifier")
+        reg.register(make_stub(
+            "verifier",
+            results=[RoleResult(
+                ok=False,
+                summary="verifier: blocked — human decision required "
+                        "to proceed",
+                escalation="the human must decide",
+            )],
+        ))
+        with temp_project() as project:
+            orch = Orchestrator(project, role_registry=reg)
+            result = orch.run("a trivial goal", max_cycles=80)
+            self.assertEqual(result["status"], "paused")
+            self.assertIn("paused", result["summary"])
+            self.assertIn("1 failed", result["summary"])
+            self.assertIn("1 escalations", result["summary"])
+
     def test_repair_hint_reaches_worker(self):
         seen_hints = []
 
@@ -255,6 +304,57 @@ class TestOrchestratorRepairLadder(unittest.TestCase):
             self.assertEqual(result["tasks_done"], 1)
             self.assertTrue(seen_hints, "worker never saw a repair hint")
             self.assertIn("implementation_error", seen_hints[0])
+
+
+class TestStaleEscalationGuard(unittest.TestCase):
+    """Slice 5: run() sweeps a stale escalation before the loop."""
+
+    def _backdate(self, project: str, days: int) -> None:
+        path = Path(project, ".mythis", "awaiting_human.md")
+        old = (datetime.now(timezone.utc)
+               - timedelta(days=days)).isoformat()
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            re.sub(r"^Asked \(UTC\): .*$", f"Asked (UTC): {old}",
+                   text, flags=re.M),
+            encoding="utf-8")
+
+    def test_stale_escalation_discarded_before_run(self):
+        reg = happy_registry()
+        with temp_project() as project:
+            esc.request_escalation(project, "Which database?", {})
+            self._backdate(project, 2)  # stale vs the 86400s default TTL
+            awaiting = Path(project, ".mythis", "awaiting_human.md")
+            self.assertTrue(esc.is_stale(project, 86400))
+
+            orch = Orchestrator(project, role_registry=reg)
+            result = orch.run("forge a widget", max_cycles=1)
+
+            # The stale question is gone; the run was not blocked.
+            self.assertFalse(awaiting.exists())
+            self.assertFalse(esc.has_pending(project))
+            self.assertEqual(result["cycles"], 1)
+
+            # A discarded record landed in the ledger.
+            log = Path(project, ".mythis", "escalations.jsonl")
+            records = [json.loads(line) for line in
+                       log.read_text(encoding="utf-8").splitlines()
+                       if line.strip()]
+            self.assertTrue(any(r.get("event") == "discarded"
+                                for r in records))
+
+            # Heimdallr announced the sweep.
+            types = [e.type for e in EventLog(project).query()]
+            self.assertIn(EventType.HUMAN_DECISION_REQUESTED, types)
+
+    def test_fresh_escalation_survives_run(self):
+        reg = happy_registry()
+        with temp_project() as project:
+            esc.request_escalation(project, "Which database?", {})
+            orch = Orchestrator(project, role_registry=reg)
+            orch.run("forge a widget", max_cycles=1)
+            self.assertTrue(
+                Path(project, ".mythis", "awaiting_human.md").exists())
 
 
 if __name__ == "__main__":

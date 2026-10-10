@@ -17,10 +17,11 @@ footstep still moves the walker forward).
 from __future__ import annotations
 
 import logging
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Deque, Dict, List, Optional, Tuple, Union
 
-from .events import EventLog, EventType
+from .events import EventLog, EventType, utc_now_iso
 from .state import ALLOWED_TRANSITIONS, IllegalTransition, ProjectState
 
 __all__ = [
@@ -121,6 +122,11 @@ class ForgeMachine:
     is made. ``go()`` raises :class:`IllegalTransition` for unknown
     states or illegal moves and never mutates state on failure.
 
+    Every successful transition is also appended to an in-memory audit
+    trail (a deque capped at 32 entries) readable via
+    :meth:`recent_transitions` — illegal attempts raise *before* any
+    recording, so the trail holds only moves that actually happened.
+
     Args:
         project_dir: The project root (``.mythis/`` lives beneath it).
         event_log: Optional :class:`~draupnir_forge.events.EventLog`
@@ -135,6 +141,9 @@ class ForgeMachine:
         self._project_dir = Path(project_dir)
         self._state = ProjectState(self._project_dir)
         self._event_log = event_log
+        # (from_state, to_state, ts_iso) of successful go() calls,
+        # oldest first; capped so a long run cannot grow memory.
+        self._transitions: Deque[Tuple[str, str, str]] = deque(maxlen=32)
 
     # -- read access ----------------------------------------------------
 
@@ -195,6 +204,22 @@ class ForgeMachine:
         else:
             self._state.transition(target)
         self._announce(previous, target)
+        # Record only successful transitions: the raises above happen
+        # before we get here, and the same-state no-op returned earlier.
+        self._transitions.append((previous, target, utc_now_iso()))
+
+    def recent_transitions(self) -> List[Dict[str, str]]:
+        """Audit trail of successful transitions, oldest first.
+
+        Returns at most the last 32 moves as
+        ``[{"from": ..., "to": ..., "ts": <UTC ISO>} ...]``. Failed
+        attempts (``IllegalTransition``) and same-state no-ops are
+        never recorded.
+        """
+        return [
+            {"from": src, "to": dst, "ts": ts}
+            for src, dst, ts in self._transitions
+        ]
 
     # -- internal --------------------------------------------------------
 

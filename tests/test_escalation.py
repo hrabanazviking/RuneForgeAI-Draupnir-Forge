@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from draupnir_forge.escalation import (
     AWAITING_FILE,
@@ -13,9 +15,12 @@ from draupnir_forge.escalation import (
     Escalation,
     EscalationPolicy,
     answer_escalation,
+    discard_stale_escalation,
     has_pending,
     is_routine,
+    is_stale,
     load_negative_list,
+    pending_age_seconds,
     request_escalation,
 )
 from draupnir_forge.failures import FailureClass, FailureRecord
@@ -228,6 +233,110 @@ class TestPauseResumeFlow(unittest.TestCase):
     def test_answer_without_pending_raises(self):
         with self.assertRaises(FileNotFoundError):
             answer_escalation(self.project, "nope")
+
+
+class TestPendingAge(unittest.TestCase):
+    """Slice 3: pending-age and staleness of an awaiting file."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = self.tmp.name
+
+    def _awaiting_path(self):
+        return os.path.join(self.project, ".mythis", AWAITING_FILE)
+
+    def _backdate(self, hours):
+        old = (datetime.now(timezone.utc)
+               - timedelta(hours=hours)).isoformat()
+        text = open(self._awaiting_path(), encoding="utf-8").read()
+        text = re.sub(r"^Asked \(UTC\): .*$", f"Asked (UTC): {old}",
+                      text, flags=re.M)
+        with open(self._awaiting_path(), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def test_fresh_escalation_is_not_stale(self):
+        request_escalation(self.project, "Which database?", {})
+        self.assertFalse(is_stale(self.project, 3600))
+        age = pending_age_seconds(self.project)
+        self.assertIsNotNone(age)
+        self.assertGreaterEqual(age, 0)
+        self.assertLess(age, 60)
+
+    def test_backdated_escalation_age_and_stale(self):
+        request_escalation(self.project, "Which database?", {})
+        self._backdate(2)
+        age = pending_age_seconds(self.project)
+        self.assertIsNotNone(age)
+        self.assertAlmostEqual(age, 7200, delta=120)
+        self.assertTrue(is_stale(self.project, 3600))
+        self.assertFalse(is_stale(self.project, 99999))
+
+    def test_missing_file_is_neither(self):
+        self.assertIsNone(pending_age_seconds(self.project))
+        self.assertFalse(is_stale(self.project, 3600))
+
+    def test_unparsable_timestamp_is_neither(self):
+        os.makedirs(os.path.join(self.project, ".mythis"), exist_ok=True)
+        with open(self._awaiting_path(), "w", encoding="utf-8") as handle:
+            handle.write("Asked (UTC): not-a-timestamp\n")
+        self.assertIsNone(pending_age_seconds(self.project))
+        self.assertFalse(is_stale(self.project, 3600))
+
+
+class TestDiscardStale(unittest.TestCase):
+    """Slice 4: discarding a stale pending escalation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = self.tmp.name
+
+    def _awaiting_path(self):
+        return os.path.join(self.project, ".mythis", AWAITING_FILE)
+
+    def _log_records(self):
+        log = os.path.join(self.project, ".mythis", "escalations.jsonl")
+        if not os.path.isfile(log):
+            return []
+        with open(log, encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def test_stale_is_discarded_and_logged(self):
+        request_escalation(self.project, "Which database?", {})
+        old = (datetime.now(timezone.utc)
+               - timedelta(hours=2)).isoformat()
+        text = open(self._awaiting_path(), encoding="utf-8").read()
+        text = re.sub(r"^Asked \(UTC\): .*$", f"Asked (UTC): {old}",
+                      text, flags=re.M)
+        with open(self._awaiting_path(), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+        self.assertTrue(discard_stale_escalation(self.project, 3600))
+        self.assertFalse(os.path.isfile(self._awaiting_path()))
+        self.assertFalse(has_pending(self.project))
+
+        records = self._log_records()
+        discarded = [r for r in records if r.get("event") == "discarded"]
+        self.assertEqual(len(discarded), 1)
+        self.assertTrue(discarded[0]["asked_at"])
+        self.assertTrue(discarded[0]["discarded_at"])
+
+    def test_fresh_is_kept_untouched(self):
+        request_escalation(self.project, "Which database?", {})
+        before = open(self._awaiting_path(), encoding="utf-8").read()
+
+        self.assertFalse(discard_stale_escalation(self.project, 3600))
+        self.assertTrue(os.path.isfile(self._awaiting_path()))
+        after = open(self._awaiting_path(), encoding="utf-8").read()
+        self.assertEqual(before, after)
+
+        records = self._log_records()
+        self.assertFalse(any(r.get("event") == "discarded"
+                             for r in records))
+
+    def test_nothing_pending_returns_false(self):
+        self.assertFalse(discard_stale_escalation(self.project, 3600))
 
 
 if __name__ == "__main__":
