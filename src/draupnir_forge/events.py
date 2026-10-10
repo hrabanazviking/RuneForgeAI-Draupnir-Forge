@@ -31,7 +31,13 @@ __all__ = [
     "ForgeEvent",
     "EventLog",
     "utc_now_iso",
+    "DEFAULT_MAX_PAYLOAD_BYTES",
 ]
+
+#: Largest serialized event payload EventLog.emit() will accept (256 KiB).
+#: Bigger payloads raise ValueError before anything is written — a
+#: runaway role cannot bloat the ledger with a megabyte of context dump.
+DEFAULT_MAX_PAYLOAD_BYTES = 262144
 
 
 def utc_now_iso() -> str:
@@ -156,11 +162,17 @@ class EventLog:
     to find the highest existing sequence number, so numbering stays
     monotonic across restarts. Corrupt lines are skipped (never raise)
     and counted in :attr:`skipped_corrupt`.
+
+    Args:
+        project_dir: Root of the forge project holding ``.mythis/``.
+        max_payload_bytes: Largest serialized payload :meth:`emit` will
+            accept; defaults to :data:`DEFAULT_MAX_PAYLOAD_BYTES`.
     """
 
     _FILENAME = "events.jsonl"
 
-    def __init__(self, project_dir: Union[str, os.PathLike]) -> None:
+    def __init__(self, project_dir: Union[str, os.PathLike],
+                 max_payload_bytes: Optional[int] = None) -> None:
         # No absolute paths are stored: everything hangs off project_dir.
         self._project_dir = Path(project_dir)
         self._mythis_dir = self._project_dir / ".mythis"
@@ -171,6 +183,10 @@ class EventLog:
         self._project = self._project_dir.name or Path.cwd().name
         self._lock = threading.Lock()
         self.skipped_corrupt = 0
+        self._max_payload_bytes = (
+            DEFAULT_MAX_PAYLOAD_BYTES if max_payload_bytes is None
+            else max_payload_bytes
+        )
         self._next_seq = self._scan()
 
     @property
@@ -231,17 +247,22 @@ class EventLog:
         """Append one event to the ledger and return it.
 
         The payload is validated *before* anything is written, so a bad
-        payload raises TypeError without touching the log or the
+        or oversized payload raises without touching the log or the
         sequence counter.
 
         Args:
             type: EventType (or its exact string value).
             actor_role: Non-empty role name, e.g. "Auditor".
-            payload: JSON-serializable dict of event details.
+            payload: JSON-serializable dict of event details. Its
+                serialized form must fit within ``max_payload_bytes``
+                (default :data:`DEFAULT_MAX_PAYLOAD_BYTES`).
             caused_by: seq of the causal parent event, if any.
 
         Returns:
             The emitted ForgeEvent with its assigned seq and timestamp.
+
+        Raises:
+            ValueError: If the serialized payload exceeds the size limit.
         """
         event_type = type if isinstance(type, EventType) else EventType(type)
         if not isinstance(actor_role, str) or not actor_role.strip():
@@ -254,6 +275,16 @@ class EventLog:
             )
         # Validate first: a poisoned payload must not claim a seq number.
         self._check_payload_serializable(payload)
+        # Size cap next, still before the ledger or seq counter is touched:
+        # a runaway role must not bloat the ledger with a context dump.
+        payload_bytes = len(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
+        if payload_bytes > self._max_payload_bytes:
+            raise ValueError(
+                f"Event payload too large: {payload_bytes} bytes exceeds "
+                f"the limit of {self._max_payload_bytes} bytes"
+            )
 
         with self._lock:
             event = ForgeEvent(
@@ -317,6 +348,42 @@ class EventLog:
         if limit is not None:
             matches = matches[-limit:] if limit else []
         return matches
+
+    def verify_integrity(self) -> Dict[str, Any]:
+        """Re-read the ledger and check sequence continuity.
+
+        Reads the file fresh (so it works on a reopened log), parses
+        the seq from each JSON line, and reports the seq numbers missing
+        between the smallest and largest seen, plus how many lines were
+        unparsable. The corrupt-line count here is local to this call —
+        it does not touch :attr:`skipped_corrupt`.
+
+        Returns:
+            ``{"gaps": [missing seq ints, ascending],
+            "corrupt_lines": int}``.
+        """
+        seqs: List[int] = []
+        corrupt_lines = 0
+        with self._lock:
+            if self._path.exists():
+                with open(self._path, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            event = ForgeEvent.from_dict(json.loads(line))
+                        except (json.JSONDecodeError, KeyError,
+                                ValueError, TypeError):
+                            corrupt_lines += 1
+                            continue
+                        seqs.append(event.seq)
+        gaps: List[int] = []
+        if seqs:
+            seen = set(seqs)
+            gaps = [s for s in range(min(seqs), max(seqs) + 1)
+                    if s not in seen]
+        return {"gaps": gaps, "corrupt_lines": corrupt_lines}
 
     def __len__(self) -> int:
         """Number of valid (non-corrupt) events currently in the ledger."""

@@ -8,7 +8,12 @@ import tempfile
 import unittest
 from datetime import datetime
 
-from draupnir_forge.events import EventLog, EventType, ForgeEvent
+from draupnir_forge.events import (
+    DEFAULT_MAX_PAYLOAD_BYTES,
+    EventLog,
+    EventType,
+    ForgeEvent,
+)
 
 # The closed set from spec §29 — the test must match it exactly.
 EXPECTED_EVENT_TYPES = (
@@ -233,6 +238,79 @@ class TestEventLog(unittest.TestCase):
         self.log.emit(EventType.TASK_STARTED, "Architect", {})
         self.log.emit(EventType.TASK_STARTED, "Architect", {})
         self.assertEqual(len(self.log), 2)
+
+    # -- slice 1: payload size cap ------------------------------------
+
+    def test_default_max_payload_bytes_is_256kib(self):
+        self.assertEqual(DEFAULT_MAX_PAYLOAD_BYTES, 262144)
+
+    def test_oversized_payload_raises_valueerror_naming_limit(self):
+        blob = "x" * (DEFAULT_MAX_PAYLOAD_BYTES + 1)
+        with self.assertRaises(ValueError) as ctx:
+            self.log.emit(EventType.TASK_STARTED, "Architect",
+                          {"blob": blob})
+        self.assertIn(str(DEFAULT_MAX_PAYLOAD_BYTES), str(ctx.exception))
+
+    def test_oversized_payload_leaves_ledger_and_seq_untouched(self):
+        self.log.emit(EventType.TASK_STARTED, "Architect", {"ok": True})
+        size_before = os.path.getsize(self.log.path)
+        seq_before = self.log._next_seq
+        blob = "x" * (DEFAULT_MAX_PAYLOAD_BYTES + 1)
+        with self.assertRaises(ValueError):
+            self.log.emit(EventType.TASK_STARTED, "Architect",
+                          {"blob": blob})
+        self.assertEqual(os.path.getsize(self.log.path), size_before)
+        self.assertEqual(self.log._next_seq, seq_before)
+        # The log still works afterwards; the failed emit claimed no seq.
+        event = self.log.emit(EventType.TASK_COMPLETED, "Auditor", {})
+        self.assertEqual(event.seq, 2)
+
+    def test_payload_at_exact_limit_is_accepted(self):
+        # json.dumps({"blob": "..."}) adds 12 bytes of framing around a
+        # pure-ascii blob, so pad accordingly to land exactly on the cap.
+        blob = "x" * (DEFAULT_MAX_PAYLOAD_BYTES - 12)
+        event = self.log.emit(EventType.TASK_STARTED, "Architect",
+                              {"blob": blob})
+        self.assertEqual(event.seq, 1)
+
+    def test_custom_max_payload_bytes_kwarg(self):
+        small = EventLog(self.project_dir, max_payload_bytes=16)
+        with self.assertRaises(ValueError):
+            small.emit(EventType.TASK_STARTED, "Architect",
+                       {"blob": "x" * 100})
+        event = small.emit(EventType.TASK_STARTED, "Architect", {"a": 1})
+        self.assertEqual(event.seq, 1)
+
+    # -- slice 2: integrity verification -------------------------------
+
+    def test_verify_integrity_clean_log(self):
+        for _ in range(5):
+            self.log.emit(EventType.TASK_STARTED, "Architect", {})
+        result = self.log.verify_integrity()
+        self.assertEqual(result, {"gaps": [], "corrupt_lines": 0})
+
+    def test_verify_integrity_detects_gap_after_manual_line_delete(self):
+        for _ in range(5):
+            self.log.emit(EventType.TASK_STARTED, "Architect", {})
+        with open(self.log.path, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+        del lines[2]  # remove the seq-3 line by hand
+        with open(self.log.path, "w", encoding="utf-8") as handle:
+            handle.writelines(lines)
+        reopened = EventLog(self.project_dir)
+        result = reopened.verify_integrity()
+        self.assertEqual(result["gaps"], [3])
+        self.assertEqual(result["corrupt_lines"], 0)
+
+    def test_verify_integrity_counts_corrupt_lines(self):
+        for _ in range(3):
+            self.log.emit(EventType.TASK_STARTED, "Architect", {})
+        with open(self.log.path, "a", encoding="utf-8") as handle:
+            handle.write("not json at all\n")
+            handle.write('{"seq": 99, "type": "BOGUS"}\n')
+        result = EventLog(self.project_dir).verify_integrity()
+        self.assertEqual(result["gaps"], [])
+        self.assertEqual(result["corrupt_lines"], 2)
 
 
 if __name__ == "__main__":

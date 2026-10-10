@@ -211,5 +211,75 @@ class TestUpdateApiSnapshot(unittest.TestCase):
             self.assertTrue(unchanged)
 
 
+class TestGateTimeout(unittest.TestCase):
+    """Slice 16: a hung engine-owned check fails its gate, never the forge."""
+
+    def _hung_check(self, release):
+        """Stand in for time.sleep(120): blocks far past any gate timeout.
+
+        (A raw sleep(120) in an abandoned pool worker would pin the test
+        process at interpreter exit — CPython joins pool workers in its
+        atexit handler — so the hang is released via the event instead.
+        From the engine's point of view the semantics are identical: the
+        check never returns before the timeout fires.)
+        """
+        def hung(*args, **kwargs):
+            release.wait(timeout=120)
+            return None
+        return hung
+
+    def test_hung_invariant_check_times_out_but_verdict_returned(self):
+        import threading
+        from draupnir_forge.roles import verifier as verifier_mod
+        release = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = VerificationEngine(tmp, gate_timeout_s=0.2)
+            engine.check_invariants = self._hung_check(release)
+            seen = {}
+            original = verifier_mod.evaluate
+
+            def spy(task, impl, test_result):
+                seen["impl"] = dict(impl)
+                return original(task, impl, test_result)
+
+            verifier_mod.evaluate = spy
+            try:
+                verdict = engine.run_gates(_task(), _green_impl(tmp),
+                                           _green_result())
+            finally:
+                verifier_mod.evaluate = original
+                release.set()
+            self.assertIsInstance(verdict, Verdict)
+            violations = seen["impl"]["invariant_violations"]
+            self.assertEqual(len(violations), 1)
+            self.assertIn("invariant checks timed out after 0.2s",
+                          violations[0])
+            gate = verdict.by_name("invariant")
+            self.assertFalse(gate.passed)
+            self.assertIn("invariant checks timed out", gate.evidence)
+
+    def test_hung_interface_check_times_out_and_fails_gate(self):
+        import threading
+        release = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = VerificationEngine(tmp, gate_timeout_s=0.2)
+            engine.check_interface = self._hung_check(release)
+            try:
+                verdict = engine.run_gates(_task(), _green_impl(tmp),
+                                           _green_result())
+            finally:
+                release.set()
+            self.assertIsInstance(verdict, Verdict)
+            gate = verdict.by_name("interface")
+            self.assertFalse(gate.passed)
+            self.assertIn("interface check timed out after 0.2s",
+                          gate.evidence)
+
+    def test_default_gate_timeout_is_sixty_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = VerificationEngine(tmp)
+            self.assertEqual(engine.gate_timeout_s, 60.0)
+
+
 if __name__ == "__main__":
     unittest.main()

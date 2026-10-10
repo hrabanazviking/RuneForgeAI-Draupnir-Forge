@@ -22,6 +22,8 @@ import ast
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -41,11 +43,41 @@ class VerificationEngine:
 
     Args:
         project_dir: Root of the forge project holding ``.mythis/``.
+        gate_timeout_s: Per-gate wall-clock timeout (seconds) for the
+            two engine-owned checks (interface snapshot diff and
+            invariant checks). A hung check is recorded as a gate
+            failure with a timeout note instead of stalling the forge.
     """
 
-    def __init__(self, project_dir: Union[str, Path]) -> None:
+    def __init__(self, project_dir: Union[str, Path],
+                 gate_timeout_s: float = 60.0) -> None:
         self.project_dir = Path(project_dir)
         self._mythis = self.project_dir / ".mythis"
+        self.gate_timeout_s = float(gate_timeout_s)
+
+    # -- timeout helper -----------------------------------------------
+
+    def _run_gate_with_timeout(self, func, *args):
+        """Run an engine-owned gate check with the per-gate timeout.
+
+        The check runs on a single worker thread; if it overruns
+        :attr:`gate_timeout_s` the worker is abandoned (never joined —
+        the forge must not stall on a hung check) and
+        :exc:`concurrent.futures.TimeoutError` is raised to the caller.
+
+        Raises:
+            concurrent.futures.TimeoutError: the check overran the gate
+                timeout.
+        """
+        executor = ThreadPoolExecutor(max_workers=1,
+                                      thread_name_prefix="draupnir-gate")
+        future = executor.submit(func, *args)
+        try:
+            return future.result(timeout=self.gate_timeout_s)
+        finally:
+            # Never block on a hung gate worker; it finishes (or not)
+            # on its own time.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     # -- public entry point ------------------------------------------
 
@@ -77,9 +109,17 @@ class VerificationEngine:
         interface_note: Optional[str] = None
         if "public_api" in record:
             try:
-                unchanged, interface_note = self.check_interface(
-                    record.get("public_api"))
+                unchanged, interface_note = self._run_gate_with_timeout(
+                    self.check_interface, record.get("public_api"))
                 record["api_unchanged"] = unchanged
+            except FuturesTimeoutError:
+                # A hung snapshot diff fails the gate, never the forge.
+                log.warning("Interface check timed out after %ss",
+                            self.gate_timeout_s)
+                record["api_unchanged"] = False
+                interface_note = (
+                    "interface check timed out after "
+                    f"{self.gate_timeout_s:g}s")
             except Exception as exc:  # Huginn reports, never panics.
                 log.warning("Interface check failed: %s", exc)
                 record["api_unchanged"] = False
@@ -87,7 +127,15 @@ class VerificationEngine:
 
         # Gate 5 (invariant): machine-checkable invariants -> violations.
         try:
-            violations, invariant_notes = self.check_invariants()
+            violations, invariant_notes = self._run_gate_with_timeout(
+                self.check_invariants)
+        except FuturesTimeoutError:
+            # A hung invariant check fails the gate, never the forge.
+            log.warning("Invariant checks timed out after %ss",
+                        self.gate_timeout_s)
+            violations = ["invariant checks timed out after "
+                          f"{self.gate_timeout_s:g}s"]
+            invariant_notes = ["invariant checks timed out"]
         except Exception as exc:
             log.warning("Invariant checks failed: %s", exc)
             violations = [f"invariant checks errored: {exc}"]
