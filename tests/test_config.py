@@ -242,5 +242,43 @@ class TestAccessors(IsolatedEnvTestCase):
         self.assertEqual(cfg.get("model.name"), "gpt-4o-mini")
 
 
+class TestSkippedFiles(IsolatedEnvTestCase):
+    """Skipped config files are recorded with path, layer, and reason."""
+
+    def test_malformed_user_config_recorded(self):
+        self.home_config_path().parent.mkdir(parents=True, exist_ok=True)
+        self.home_config_path().write_text(":\n: bad: [unclosed\n",
+                                           encoding="utf-8")
+        cfg = ForgeConfig.load()  # must not raise
+        self.assertEqual(len(cfg.skipped_files), 1)
+        entry = cfg.skipped_files[0]
+        self.assertEqual(entry["layer"], "user")
+        self.assertEqual(entry["reason"], "yaml_error")
+        self.assertIn(".draupnir", entry["path"])
+        # The summary surfaces the skip.
+        summary = cfg.summary()
+        self.assertIn("Skipped config files (1)", summary)
+        self.assertIn("yaml_error", summary)
+        self.assertIn("user", summary)
+
+    def test_not_a_mapping_project_config_recorded(self):
+        _write_yaml(self.project_config_path(), ["not", "a", "mapping"])  # type: ignore[arg-type]
+        cfg = ForgeConfig.load(project_dir=self.project)
+        by_layer = {e["layer"]: e["reason"] for e in cfg.skipped_files}
+        self.assertEqual(by_layer.get("project"), "not_a_mapping")
+
+    def test_valid_config_leaves_skipped_files_empty(self):
+        _write_yaml(self.home_config_path(), {"autonomy": "deep"})
+        _write_yaml(self.project_config_path(), {"autonomy": "trusted"})
+        cfg = ForgeConfig.load(project_dir=self.project)
+        self.assertEqual(cfg.skipped_files, [])
+        self.assertIn("No config files were skipped.", cfg.summary())
+
+    def test_missing_files_are_not_skips(self):
+        # Absent files are silently skipped without a skipped_files entry.
+        cfg = ForgeConfig.load(project_dir=self.project)
+        self.assertEqual(cfg.skipped_files, [])
+
+
 if __name__ == "__main__":
     unittest.main()

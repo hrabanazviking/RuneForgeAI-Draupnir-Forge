@@ -13,6 +13,10 @@ data-driven repair hint from ``data/repair_hints.yaml``, and attempts a
   test is refused outright;
 - after applying, the Tester role re-runs the suite; green means
   repaired, red means a fresh :class:`FailureRecord` for the caller;
+- before any patch lands, a best-effort git checkpoint is taken via
+  :class:`~draupnir_forge.checkpoints.Checkpointer` (the pre-repair
+  snapshot); its ref is recorded in the attempt history as
+  ``snapshot_ref`` so the mend can always be unwound;
 - at most 3 attempts per task, tracked in
   ``.mythis/repair_history.jsonl``; then the engine gives up and the
   caller replans (escalation ladder, §16).
@@ -35,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from draupnir_forge import _paths
+from draupnir_forge.checkpoints import Checkpointer
 from draupnir_forge.failures import (
     FailureClass,
     FailureRecord,
@@ -497,6 +502,8 @@ class RepairEngine:
 
         attempt_no = prior + 1
         hint, strategy_name = select_hint(failure_class, failure.detail or "")
+        # Set before any patch lands; recorded in every attempt record below.
+        snapshot_ref: Optional[str] = None
 
         patch_text = impl.get("patch")
         if isinstance(patch_text, str) and patch_text.strip():
@@ -524,6 +531,7 @@ class RepairEngine:
                 "failure_class": failure_class.value,
                 "hint": hint, "strategy": strategy_name,
                 "repaired": False, "reason": "no_patch",
+                "snapshot_ref": snapshot_ref,
             })
             return RepairResult(repaired=False, patch=None,
                                 new_failure=failure, attempts=attempt_no)
@@ -540,6 +548,7 @@ class RepairEngine:
                 "failure_class": failure_class.value,
                 "hint": hint, "strategy": strategy_name,
                 "repaired": False, "reason": f"patch_refused: {reason}",
+                "snapshot_ref": snapshot_ref,
             })
             refusal = FailureRecord(
                 failure_class=failure_class,
@@ -550,6 +559,21 @@ class RepairEngine:
             )
             return RepairResult(repaired=False, patch=patch_text,
                                 new_failure=refusal, attempts=attempt_no)
+
+        # Stone the current tree before the hammer falls: a best-effort
+        # pre-repair snapshot. It must never block the repair — any
+        # failure here degrades to snapshot_ref=None and the mend
+        # proceeds anyway.
+        try:
+            snapshot_ref = Checkpointer(self.project_dir).checkpoint(
+                task_id=task_id,
+                message=(f"pre-repair snapshot for task {task_id} "
+                         f"(attempt {attempt_no})"),
+            )
+        except Exception as exc:
+            log.warning("Pre-repair snapshot failed for task %s: %s",
+                        task_id, exc)
+            snapshot_ref = None
 
         try:
             changed = apply_patch(str(self.project_dir), patch_text)
@@ -563,6 +587,7 @@ class RepairEngine:
                 "failure_class": failure_class.value,
                 "hint": hint, "strategy": strategy_name,
                 "repaired": False, "reason": f"apply_failed: {exc}",
+                "snapshot_ref": snapshot_ref,
             })
             return RepairResult(repaired=False, patch=patch_text,
                                 new_failure=failure, attempts=attempt_no)
@@ -589,6 +614,7 @@ class RepairEngine:
                 "failure_class": failure_class.value,
                 "hint": hint, "strategy": strategy_name,
                 "repaired": True, "changed": changed,
+                "snapshot_ref": snapshot_ref,
             })
             return RepairResult(repaired=True, patch=patch_text,
                                 new_failure=None, attempts=attempt_no)
@@ -613,6 +639,7 @@ class RepairEngine:
             "failure_class": failure_class.value,
             "hint": hint, "strategy": strategy_name,
             "repaired": False, "reason": "tests_still_red",
+            "snapshot_ref": snapshot_ref,
         })
         return RepairResult(repaired=False, patch=patch_text,
                             new_failure=new_failure, attempts=attempt_no)

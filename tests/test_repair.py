@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -180,6 +181,86 @@ class RepairEngineTest(unittest.TestCase):
             "ModuleNotFoundError: No module named 'requests'")
         self.assertEqual(strategy2, "add_requirement")
         self.assertIn("requests", hint2)
+
+
+class PreRepairSnapshotTest(unittest.TestCase):
+    """The mend must be preceded by a git snapshot of the tree."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        _write(self.root / "app.py",
+               "def run():\n    return helper()\n")
+        _write(self.root / "util.py",
+               "def helper():\n    return 42\n")
+        _write(self.root / "tests" / "test_app.py",
+               "import os\n"
+               "import sys\n"
+               "import unittest\n"
+               "sys.path.insert(0, os.path.dirname(os.path.dirname(\n"
+               "    os.path.abspath(__file__))))\n"
+               "from app import run\n\n\n"
+               "class TestApp(unittest.TestCase):\n"
+               "    def test_run(self):\n"
+               "        self.assertEqual(run(), 42)\n")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _git(self, *args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=str(self.root),
+            capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+
+    def _history(self):
+        history_path = self.root / ".mythis" / "repair_history.jsonl"
+        return [json.loads(line) for line in
+                history_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+
+    def test_snapshot_ref_is_a_real_git_ref(self) -> None:
+        # A git repo with the fixture committed; the tree is dirty so
+        # the snapshot has something to commit.
+        self._git("init")
+        # The checkpointer commits: give the repo a git identity.
+        self._git("config", "user.email", "forge@test")
+        self._git("config", "user.name", "forge-test")
+        self._git("add", "-A")
+        self._git("-c", "user.email=t@t", "-c", "user.name=t",
+                  "commit", "-m", "fixture")
+        _write(self.root / "scratch.txt", "uncommitted work\n")
+
+        engine = RepairEngine(self.root)
+        result = engine.attempt(_task(), _name_error_failure(), {})
+        self.assertTrue(result.repaired, "the NameError should be repaired")
+
+        records = self._history()
+        self.assertEqual(len(records), 1)
+        snapshot_ref = records[0].get("snapshot_ref")
+        self.assertIsNotNone(snapshot_ref,
+                             "attempt history must carry the snapshot ref")
+        # It must be a real commit created by the checkpointer.
+        self.assertEqual(
+            self._git("cat-file", "-t", snapshot_ref), "commit")
+        self.assertIn("pre-repair snapshot",
+                      self._git("log", "-1", "--format=%B", snapshot_ref))
+        self.assertIn("Forge-Task: T-001",
+                      self._git("log", "-1", "--format=%B", snapshot_ref))
+        # The repair applied its patch without committing, so HEAD is
+        # still the snapshot commit.
+        self.assertEqual(self._git("rev-parse", "HEAD"), snapshot_ref)
+
+    def test_snapshot_none_outside_git_and_repair_proceeds(self) -> None:
+        # Not a git repository: the snapshot degrades to None and the
+        # repair must proceed normally anyway.
+        engine = RepairEngine(self.root)
+        result = engine.attempt(_task(), _name_error_failure(), {})
+        self.assertTrue(result.repaired,
+                        "repair must proceed without a git repo")
+        records = self._history()
+        self.assertEqual(len(records), 1)
+        self.assertIsNone(records[0].get("snapshot_ref"))
 
 
 class PatchBoundsTest(unittest.TestCase):

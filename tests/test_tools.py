@@ -109,15 +109,74 @@ class ToolExecutorTest(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertLess(elapsed, 20)
 
-    def test_output_capped_at_100kb(self):
+    def test_output_truncated_at_default_cap(self):
+        # Default cap is tools.max_output_bytes = 1 MiB: printing 2 MiB
+        # must truncate with a marker and set truncated=True.
         result = self.executor.run(
-            [
-                sys.executable,
-                "-c",
-                "import sys; sys.stdout.write('x' * 300000)",
-            ]
+            [sys.executable, "-c", "print('x' * 2000000)"]
         )
-        self.assertEqual(len(result.stdout), 100 * 1024)
+        cap = 1048576
+        marker = "\n[truncated 951425 bytes]"  # 2000001 - 1048576
+        self.assertTrue(result.truncated)
+        self.assertIn("[truncated ", result.stdout)
+        self.assertTrue(result.stdout.endswith(marker))
+        self.assertEqual(result.stdout, "x" * cap + marker)
+        self.assertLessEqual(len(result.stdout), cap + len(marker))
+
+    def test_small_output_not_truncated(self):
+        result = self.executor.run(["echo", "skol"])
+        self.assertFalse(result.truncated)
+        self.assertNotIn("[truncated ", result.stdout)
+        self.assertNotIn("[truncated ", result.stderr)
+
+    def test_output_cap_from_config(self):
+        executor = ToolExecutor(
+            self.root, _config(**{"tools.max_output_bytes": 100})
+        )
+        result = executor.run(
+            [sys.executable, "-c", "print('x' * 500)"]
+        )
+        marker = "\n[truncated 401 bytes]"  # 501 - 100
+        self.assertTrue(result.truncated)
+        self.assertEqual(result.stdout, "x" * 100 + marker)
+
+    def test_stderr_truncated_independently(self):
+        result = self.executor.run(
+            [sys.executable, "-c",
+             "import sys; sys.stdout.write('ok'); "
+             "sys.stderr.write('e' * 2000000)"]
+        )
+        self.assertTrue(result.truncated)
+        self.assertEqual(result.stdout, "ok")
+        self.assertNotIn("[truncated ", result.stdout)
+        self.assertIn("[truncated ", result.stderr)
+        self.assertTrue(result.stderr.startswith("e" * 1048576))
+
+    def test_bad_cap_config_falls_back_to_default(self):
+        class StubConfig:
+            def get(self, key, default=None):
+                return {"tools.max_output_bytes": "banana",
+                        "tools.allow_exec": True}.get(key, default)
+
+        executor = ToolExecutor(self.root, StubConfig())
+        # The bogus value must not crash the run; the 1 MiB default cap
+        # applies, so 2 MiB of output is still truncated.
+        result = executor.run(
+            [sys.executable, "-c", "print('x' * 2000000)"]
+        )
+        self.assertTrue(result.truncated)
+        self.assertIn("[truncated 951425 bytes]", result.stdout)
+
+    def test_negative_cap_config_falls_back_to_default(self):
+        class StubConfig:
+            def get(self, key, default=None):
+                return {"tools.max_output_bytes": -5,
+                        "tools.allow_exec": True}.get(key, default)
+
+        executor = ToolExecutor(self.root, StubConfig())
+        result = executor.run(["echo", "skol"])
+        self.assertFalse(result.truncated)
+        self.assertIn("skol", result.stdout)
 
     def test_kind_exec_default_allowed(self):
         result = self.executor.run(["echo", "ok"], kind="exec")
@@ -199,6 +258,31 @@ class ApplyPatchTest(unittest.TestCase):
         from draupnir_forge.roles.worker import PatchError as WorkerPatchError
 
         self.assertIs(PatchError, WorkerPatchError)
+
+    def test_dry_run_passes_through_to_worker_and_changes_nothing(self):
+        """The tools.py entry point accepts dry_run and passes it through;
+        a valid dry-run patch reports paths while the tree stays intact."""
+        _path = os.path.join(self.root, "a.txt")
+        with open(_path, "w", encoding="utf-8") as handle:
+            handle.write("one\ntwo\nthree\n")
+        patch = (
+            "--- a/a.txt\n"
+            "+++ b/a.txt\n"
+            "@@ -1,3 +1,3 @@\n"
+            " one\n"
+            "-two\n"
+            "+TWO\n"
+            " three\n"
+        )
+        changed = apply_patch(self.root, patch, dry_run=True)
+        self.assertEqual(changed, ["a.txt"])
+        self.assertEqual(self._read("a.txt"), "one\ntwo\nthree\n")
+
+    def test_dry_run_malformed_raises_through_tools(self):
+        with self.assertRaises(PatchError):
+            apply_patch(self.root, "not a diff\n", dry_run=True)
+        # Tree untouched.
+        self.assertEqual(os.listdir(self.root), [])
 
 
 if __name__ == "__main__":

@@ -30,8 +30,9 @@ from typing import List, Optional
 
 log = logging.getLogger("draupnir_forge.tools")
 
-# Cap on captured stdout/stderr per command (100 KiB).
-_OUTPUT_CAP = 100 * 1024
+# Default cap on captured stdout/stderr per command (1 MiB). The live
+# value comes from the ``tools.max_output_bytes`` config key.
+_DEFAULT_MAX_OUTPUT_BYTES = 1048576
 
 # Tool kind -> config flag that authorizes it (None = always allowed).
 _KIND_TO_FLAG = {
@@ -54,10 +55,14 @@ class ToolResult:
 
     Attributes:
         exit_code: Process exit status (127 when the binary was missing).
-        stdout: Captured standard output, capped at 100 KiB.
-        stderr: Captured standard error, capped at 100 KiB.
+        stdout: Captured standard output, capped at
+            ``tools.max_output_bytes`` (a ``[truncated N bytes]`` marker
+            is appended when the cap bites).
+        stderr: Captured standard error, capped the same way.
         duration_s: Wall-clock seconds the command ran.
         timed_out: True when the timeout killed the process tree.
+        truncated: True when stdout or stderr (or both) was cut at the
+            output cap.
     """
 
     exit_code: int
@@ -65,6 +70,7 @@ class ToolResult:
     stderr: str
     duration_s: float
     timed_out: bool
+    truncated: bool = False
 
 
 class ToolExecutor:
@@ -73,7 +79,8 @@ class ToolExecutor:
     Args:
         project_dir: Project root; every command's cwd is pinned here.
         config: A :class:`ForgeConfig` carrying the ``tools.allow_*``
-            flags and ``tools.default_timeout_s``.
+            flags, ``tools.default_timeout_s``, and
+            ``tools.max_output_bytes`` (the per-stream output cap).
     """
 
     def __init__(self, project_dir: str | Path, config: object) -> None:
@@ -109,6 +116,33 @@ class ToolExecutor:
             )
 
     # -- execution -------------------------------------------------------
+    def _output_cap(self) -> int:
+        """Output cap in bytes from ``tools.max_output_bytes``.
+
+        Bad config values (missing, non-integer, negative) fall back
+        to the 1 MiB default rather than breaking command output.
+        """
+        try:
+            cap = int(self.config.get("tools.max_output_bytes",
+                                      _DEFAULT_MAX_OUTPUT_BYTES))
+        except (TypeError, ValueError, AttributeError, KeyError):
+            return _DEFAULT_MAX_OUTPUT_BYTES
+        if cap < 0:
+            return _DEFAULT_MAX_OUTPUT_BYTES
+        return cap
+
+    @staticmethod
+    def _truncate_output(text: str, cap: int) -> tuple:
+        """Cut *text* to *cap* chars, appending a truncation marker.
+
+        Returns ``(text, was_truncated)``. stdout and stderr are
+        handled independently.
+        """
+        if len(text) <= cap:
+            return text, False
+        marker = f"\n[truncated {len(text) - cap} bytes]"
+        return text[:cap] + marker, True
+
     def run(
         self,
         cmd: List[str],
@@ -127,8 +161,9 @@ class ToolExecutor:
                 before anything spawns.
 
         Returns:
-            A :class:`ToolResult` with exit code, capped output,
-            duration, and the timeout flag.
+            A :class:`ToolResult` with exit code, capped output (see
+            ``tools.max_output_bytes``), duration, the timeout flag,
+            and ``truncated`` when the cap cut the output.
 
         Raises:
             ValueError: On an unknown *kind* or a malformed *cmd*.
@@ -182,12 +217,16 @@ class ToolExecutor:
             stdout, stderr = proc.communicate()
         exit_code = proc.returncode if proc.returncode is not None else -1
         duration = time.monotonic() - start
+        cap = self._output_cap()
+        stdout, stdout_cut = self._truncate_output(stdout, cap)
+        stderr, stderr_cut = self._truncate_output(stderr, cap)
         return ToolResult(
             exit_code=exit_code,
-            stdout=stdout[:_OUTPUT_CAP],
-            stderr=stderr[:_OUTPUT_CAP],
+            stdout=stdout,
+            stderr=stderr,
             duration_s=duration,
             timed_out=timed_out,
+            truncated=stdout_cut or stderr_cut,
         )
 
     @staticmethod
@@ -214,7 +253,7 @@ class ToolExecutor:
 # ---------------------------------------------------------------------------
 
 
-def apply_patch(project_dir: str, patch_text: str) -> List[str]:
+def apply_patch(project_dir: str, patch_text: str, *, dry_run: bool = False) -> List[str]:
     """Apply a unified diff to the files under *project_dir*.
 
     Handles new files (``--- /dev/null``), deletions (``+++ /dev/null``),
@@ -226,13 +265,17 @@ def apply_patch(project_dir: str, patch_text: str) -> List[str]:
     so every consumer shares one patch engine. The import is lazy to
     avoid any import-order coupling between tools and roles.
 
+    When ``dry_run`` is True, the patch is fully validated but nothing is
+    written, created, or deleted; the would-change relative paths are
+    returned.
+
     Raises:
         PatchError: On malformed patches, context mismatches, or paths
             that escape *project_dir* (see ``draupnir_forge.tools``).
     """
     from draupnir_forge.roles.worker import apply_patch as _impl
 
-    return _impl(project_dir, patch_text)
+    return _impl(project_dir, patch_text, dry_run=dry_run)
 
 
 def __getattr__(name: str):

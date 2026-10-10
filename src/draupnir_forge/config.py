@@ -22,7 +22,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 try:
     import yaml
@@ -47,12 +47,47 @@ _MISSING = object()
 # YAML loading helpers (never crash on user files)
 # ---------------------------------------------------------------------------
 
-def _load_yaml_file(path: Path) -> Dict[str, Any]:
+def _layer_for_path(path: Path) -> str:
+    """Map a config file path to its layer name.
+
+    ``"defaults"`` for the built-in ``default_config.yaml``, ``"user"``
+    for ``~/.draupnir/config.yaml``, ``"project"`` for
+    ``<project>/.mythis/config.yaml``; anything else is ``"unknown"``.
+    """
+    parts = Path(path).parts
+    name = parts[-1] if parts else ""
+    if name == Path(DEFAULT_CONFIG_FILE).name:
+        return "defaults"
+    if name == "config.yaml":
+        if ".draupnir" in parts:
+            return "user"
+        if ".mythis" in parts:
+            return "project"
+    return "unknown"
+
+
+def _record_skip(sink: Optional[List[Dict[str, str]]], path: Path,
+                 reason: str) -> None:
+    """Append a skipped-file entry (path/layer/reason) to *sink*."""
+    if sink is not None:
+        sink.append({
+            "path": str(path),
+            "layer": _layer_for_path(path),
+            "reason": reason,
+        })
+
+
+def _load_yaml_file(path: Path,
+                     sink: Optional[List[Dict[str, str]]] = None
+                     ) -> Dict[str, Any]:
     """Load a YAML mapping from *path*, returning ``{}`` on any problem.
 
     Missing files are silently skipped. Unreadable or malformed files
     produce a warning and are skipped too — user config must never be
-    able to sink the Forge.
+    able to sink the Forge. Every skipped file is recorded in *sink*
+    (when given) as ``{"path", "layer", "reason"}`` with reason one of
+    ``missing_yaml`` (PyYAML unavailable), ``unreadable`` (OSError),
+    ``yaml_error`` (parse exception), or ``not_a_mapping``.
     """
     try:
         if not path.is_file():
@@ -61,17 +96,24 @@ def _load_yaml_file(path: Path) -> Dict[str, Any]:
         return {}
     if yaml is None:
         log.warning("PyYAML unavailable; skipping config file %s", path)
+        _record_skip(sink, path, "missing_yaml")
         return {}
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
-    except Exception as exc:
+    except OSError as exc:
         log.warning("Ignoring unreadable config file %s: %s", path, exc)
+        _record_skip(sink, path, "unreadable")
+        return {}
+    except Exception as exc:
+        log.warning("Ignoring malformed config file %s: %s", path, exc)
+        _record_skip(sink, path, "yaml_error")
         return {}
     if data is None:
         return {}
     if not isinstance(data, dict):
         log.warning("Ignoring config file %s: top level must be a mapping", path)
+        _record_skip(sink, path, "not_a_mapping")
         return {}
     return data
 
@@ -304,10 +346,18 @@ class ForgeConfig:
     Build with :meth:`load`, which merges the five layers (defaults <
     user file < project file < environment < explicit overrides) and
     validates the result. Read values with dotted :meth:`get`, or take a
-    snapshot with :meth:`to_dict`.
+    snapshot with :meth:`to_dict`. Files skipped during loading are
+    listed in :attr:`skipped_files` and surfaced by :meth:`summary`.
     """
 
     _data: Dict[str, Any] = field(default_factory=dict, repr=False)
+
+    #: Config files that were skipped while loading, in order, as
+    #: ``{"path": str, "layer": str, "reason": str}`` entries. Layer is
+    #: one of "defaults" / "user" / "project" / "unknown"; reason one of
+    #: "missing_yaml" / "unreadable" / "yaml_error" / "not_a_mapping".
+    skipped_files: List[Dict[str, str]] = field(default_factory=list,
+                                               repr=False)
 
     @classmethod
     def load(
@@ -331,22 +381,25 @@ class ForgeConfig:
                 built-in data file is missing/broken.
         """
         merged: Dict[str, Any] = {}
+        skipped: List[Dict[str, str]] = []
         # Ring 1: built-in defaults (a broken install deserves a loud error).
         merged = _deep_merge(merged, _paths.load_data_yaml(DEFAULT_CONFIG_FILE))
         # Ring 2: per-user file, silently skipped when absent.
         home = Path(os.path.expanduser("~"))
-        merged = _deep_merge(merged, _load_yaml_file(home / USER_CONFIG_RELATIVE))
+        merged = _deep_merge(
+            merged, _load_yaml_file(home / USER_CONFIG_RELATIVE, sink=skipped))
         # Ring 3: per-project file, silently skipped when absent.
         if project_dir is not None:
             project_file = Path(project_dir) / PROJECT_CONFIG_RELATIVE
-            merged = _deep_merge(merged, _load_yaml_file(project_file))
+            merged = _deep_merge(
+                merged, _load_yaml_file(project_file, sink=skipped))
         # Ring 4: environment.
         merged = _deep_merge(merged, _env_overrides())
         # Ring 5: explicit overrides.
         if overrides is not None:
             merged = _deep_merge(merged, _normalize_overrides(overrides))
         _validate(merged, _paths.load_data_yaml(SCHEMA_FILE))
-        return cls(_data=merged)
+        return cls(_data=merged, skipped_files=skipped)
 
     def get(self, key: str, default: Any = _MISSING) -> Any:
         """Return the value at a dotted *key* (e.g. ``"model.provider"``).
@@ -366,3 +419,24 @@ class ForgeConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Return a deep copy of the configuration as nested dicts."""
         return copy.deepcopy(self._data)
+
+    def summary(self) -> str:
+        """Short human-readable summary of the loaded configuration.
+
+        Reports how many keys were loaded and lists any config files
+        that were skipped (path, layer, reason) — the files the Forge
+        sailed past without sinking.
+        """
+        lines = [f"Draupnir Forge configuration: "
+                 f"{len(_flatten(self._data))} keys loaded."]
+        if self.skipped_files:
+            lines.append(
+                f"Skipped config files ({len(self.skipped_files)}):")
+            for entry in self.skipped_files:
+                lines.append(
+                    f"  - {entry.get('path')} "
+                    f"[layer={entry.get('layer')}] "
+                    f"reason={entry.get('reason')}")
+        else:
+            lines.append("No config files were skipped.")
+        return "\n".join(lines)
