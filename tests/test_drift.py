@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from draupnir_forge.drift import (
@@ -13,6 +14,8 @@ from draupnir_forge.drift import (
     DriftKind,
     SEVERITY_HIGH,
     SEVERITY_MEDIUM,
+    baseline_age_days,
+    is_baseline_stale,
     scan_public_api,
 )
 
@@ -181,6 +184,96 @@ class DriftDetectorTest(unittest.TestCase):
         api = scan_public_api(self.root)
         self.assertIn("new_func", api.get("src.core.a", []))
         self.assertNotIn("other", api.get("src.core.a", []))
+
+
+class BaselineAgeTest(unittest.TestCase):
+    """Slice 15: the drift baseline carries its creation timestamp."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _write_baseline(self, created_ts) -> None:
+        data = _architecture()
+        if created_ts is not None:
+            data["created_ts"] = created_ts
+        _write(self.root / ".mythis" / "architecture.json",
+               json.dumps(data))
+
+    def test_missing_baseline_age_is_none_and_not_stale(self) -> None:
+        self.assertIsNone(baseline_age_days(self.root))
+        self.assertFalse(is_baseline_stale(self.root))
+
+    def test_fresh_baseline_age_near_zero_and_not_stale(self) -> None:
+        self._write_baseline(datetime.now(timezone.utc).isoformat())
+        age = baseline_age_days(self.root)
+        self.assertIsNotNone(age)
+        self.assertGreaterEqual(age, 0.0)
+        self.assertLess(age, 1.0)
+        self.assertFalse(is_baseline_stale(self.root))
+
+    def test_backdated_baseline_age_and_stale(self) -> None:
+        backdated = (datetime.now(timezone.utc)
+                     - timedelta(days=40)).isoformat()
+        self._write_baseline(backdated)
+        age = baseline_age_days(self.root)
+        self.assertIsNotNone(age)
+        self.assertAlmostEqual(age, 40.0, delta=0.05)
+        self.assertTrue(is_baseline_stale(self.root))
+        # A custom horizon still governs the verdict.
+        self.assertFalse(is_baseline_stale(self.root, max_days=365.0))
+
+    def test_baseline_without_timestamp_is_not_stale(self) -> None:
+        # Baselines written before slice 15 carry no created_ts: their
+        # age is unknown, and unknown is not stale.
+        self._write_baseline(None)
+        self.assertIsNone(baseline_age_days(self.root))
+        self.assertFalse(is_baseline_stale(self.root))
+
+    def test_report_notes_stale_baseline(self) -> None:
+        backdated = (datetime.now(timezone.utc)
+                     - timedelta(days=40)).isoformat()
+        self._write_baseline(backdated)
+        detector = DriftDetector(self.root)
+        detector.report([])
+        text = (self.root / ".mythis" / "KNOWN_ISSUES.md").read_text(
+            encoding="utf-8")
+        self.assertIn("baseline is 40 days old", text)
+        self.assertIn("consider re-baselining", text)
+
+    def test_report_omits_note_for_fresh_baseline(self) -> None:
+        self._write_baseline(datetime.now(timezone.utc).isoformat())
+        detector = DriftDetector(self.root)
+        detector.report([])
+        text = (self.root / ".mythis" / "KNOWN_ISSUES.md").read_text(
+            encoding="utf-8")
+        self.assertNotIn("consider re-baselining", text)
+
+    def test_architect_write_stamps_created_ts(self) -> None:
+        # The real write path (the Architect role) records the timestamp
+        # when the drift baseline is written.
+        from draupnir_forge.roles.architect import Architect
+        from draupnir_forge.roles.base import RoleContext
+
+        alpha = self.root / "alpha"
+        alpha.mkdir()
+        (alpha / "__init__.py").write_text("", encoding="utf-8")
+        (alpha / "core.py").write_text("def build():\n    return True\n",
+                                       encoding="utf-8")
+        result = Architect().run(RoleContext(
+            project_dir=str(self.root),
+            artifacts={"vision": {"name": "Sample"}}))
+        self.assertTrue(result.ok, result.summary)
+        data = json.loads((self.root / ".mythis" / "architecture.json")
+                          .read_text(encoding="utf-8"))
+        self.assertIn("created_ts", data)
+        age = baseline_age_days(self.root)
+        self.assertIsNotNone(age)
+        self.assertLess(age, 1.0)
+        self.assertFalse(is_baseline_stale(self.root))
 
 
 if __name__ == "__main__":

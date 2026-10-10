@@ -117,6 +117,58 @@ class TestReadWrite(unittest.TestCase):
             self.assertEqual(memory.read_doc("../../escape.txt"), "")
 
 
+class TestAtomicWriteDoc(unittest.TestCase):
+    """Slice 18: write_doc() is atomic — temp file + fsync + rename."""
+
+    def test_twenty_docs_round_trip_with_no_tmp_leftovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = ProjectMemory(tmp)
+            memory.ensure_skeleton()
+            expected = {}
+            # Ten canonical docs: the Scribe's quill-guard still applies.
+            for i, name in enumerate(CANONICAL[:10]):
+                content = f"# Canonical {i}\n\nsacred words {i}\n"
+                memory.write_doc(name, content, by_scribe=True)
+                expected[name] = content
+            # Ten free-zone docs: evidence/ and sessions/ are free ground.
+            for i in range(10):
+                name = (f"evidence/doc-{i:02d}.md" if i % 2 == 0
+                        else f"sessions/doc-{i:02d}.md")
+                content = f"# Free {i}\n\nworking words {i}\n"
+                memory.write_doc(name, content)
+                expected[name] = content
+            self.assertEqual(len(expected), 20)
+            for name, content in expected.items():
+                self.assertEqual(memory.read_doc(name), content, name)
+            leftovers = list((Path(tmp) / ".mythis").rglob("*.tmp"))
+            self.assertEqual(leftovers, [])
+
+    def test_overwrite_replaces_content_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = ProjectMemory(tmp)
+            memory.ensure_skeleton()
+            memory.write_doc("evidence/notes.md", "first draft")
+            memory.write_doc("evidence/notes.md", "second draft, final")
+            self.assertEqual(memory.read_doc("evidence/notes.md"),
+                             "second draft, final")
+            leftovers = list((Path(tmp) / ".mythis").rglob("*.tmp"))
+            self.assertEqual(leftovers, [])
+
+    def test_permission_denied_leaves_nothing_behind(self):
+        # The quill-guard fires before any write begins: no document,
+        # no stray temp file.
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = ProjectMemory(tmp)
+            memory.ensure_skeleton()
+            with self.assertRaises(PermissionError):
+                memory.write_doc("DECISIONS.md", "forged words")
+            mythis = Path(tmp) / ".mythis"
+            self.assertNotIn("forged words",
+                             memory.read_doc("DECISIONS.md"))
+            leftovers = list(mythis.rglob("*.tmp"))
+            self.assertEqual(leftovers, [])
+
+
 class TestSnapshot(unittest.TestCase):
     def test_snapshot_holds_all_docs_and_halls(self):
         with tempfile.TemporaryDirectory() as tmp:

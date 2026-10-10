@@ -35,6 +35,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
@@ -56,6 +57,14 @@ NEW_DOMAIN_FILE_THRESHOLD = 5
 SEVERITY_HIGH = "high"
 SEVERITY_MEDIUM = "medium"
 SEVERITY_LOW = "low"
+
+#: Key in the architecture baseline (``.mythis/architecture.json``)
+#: holding its creation timestamp (ISO-8601 UTC), stamped by the
+#: Architect when the baseline is written (slice 15).
+BASELINE_CREATED_TS_KEY = "created_ts"
+
+#: Default staleness horizon for :func:`is_baseline_stale`, in days.
+DEFAULT_BASELINE_MAX_DAYS = 30.0
 
 
 class DriftKind(str, Enum):
@@ -129,6 +138,75 @@ def _arch_top_dirs(arch: architect.Architecture) -> Set[str]:
             if len(parts) > 1 and parts[0] and parts[0] not in cartographer.SKIP_DIRS:
                 claimed.add(parts[0])
     return claimed
+
+
+# ---------------------------------------------------------------------------
+# Baseline age (slice 15)
+# ---------------------------------------------------------------------------
+
+
+def _baseline_data(project_dir: Union[str, Path]) -> Optional[Dict]:
+    """Raw baseline JSON as a dict; None when absent, invalid, or not a dict."""
+    path = Path(project_dir) / ".mythis" / ARCHITECTURE_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _parse_created_ts(value: str) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp; None when it cannot be parsed.
+
+    A trailing ``Z`` is accepted as UTC; naive timestamps are treated
+    as UTC so they compare sanely against the forge's UTC stamps.
+    """
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def baseline_age_days(project_dir: Union[str, Path]) -> Optional[float]:
+    """Age of the drift baseline in days, as a float.
+
+    Returns:
+        The age in fractional days, or None when there is no baseline
+        or it carries no parseable creation timestamp (e.g. baselines
+        written before slice 15 stamped them).
+    """
+    data = _baseline_data(project_dir)
+    if data is None:
+        return None
+    ts = data.get(BASELINE_CREATED_TS_KEY)
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    parsed = _parse_created_ts(ts)
+    if parsed is None:
+        return None
+    delta = datetime.now(timezone.utc) - parsed
+    return delta.total_seconds() / 86400.0
+
+
+def is_baseline_stale(project_dir: Union[str, Path],
+                      max_days: float = DEFAULT_BASELINE_MAX_DAYS) -> bool:
+    """True when the drift baseline is older than ``max_days``.
+
+    No baseline — or a baseline with no readable timestamp — is not
+    stale: there is no evidence it aged, only that it is undated. Never
+    raises.
+    """
+    try:
+        age = baseline_age_days(project_dir)
+    except Exception:  # staleness must never crash a drift scan
+        return False
+    return age is not None and age > max_days
 
 
 # ---------------------------------------------------------------------------
@@ -449,9 +527,16 @@ class DriftDetector:
                 header = "# Known Issues\n\n"
             else:
                 header = ""
-            from datetime import datetime, timezone
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             lines = [header, f"## Drift scan — {stamp}\n"]
+            # Slice 15: warn when the baseline itself is getting old —
+            # drift measured against an ancient map may be noise.
+            age_days = baseline_age_days(self.project_dir)
+            if age_days is not None and is_baseline_stale(self.project_dir):
+                lines.append(
+                    f"- **baseline-age**: baseline is {age_days:.0f} days old"
+                    " — consider re-baselining.\n"
+                )
             if not findings:
                 lines.append("- No drift found: the repo matches the "
                              "architecture baseline.\n")

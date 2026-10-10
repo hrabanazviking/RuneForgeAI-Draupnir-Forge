@@ -21,6 +21,7 @@ import ast
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -398,8 +399,14 @@ class Architect(Role):
             mythis = Path(project_dir) / ".mythis"
             mythis.mkdir(parents=True, exist_ok=True)
             json_path = mythis / ARCHITECTURE_JSON
+            # Slice 15: stamp the drift baseline with its creation time
+            # (ISO-8601 UTC) so drift.py can report its age and staleness.
+            # The Architecture dataclass is untouched — readers use .get(),
+            # so the extra key is invisible to them.
+            payload = arch.to_dict()
+            payload["created_ts"] = datetime.now(timezone.utc).isoformat()
             json_path.write_text(
-                json.dumps(arch.to_dict(), indent=2, sort_keys=True) + "\n",
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             (mythis / ARCHITECTURE_MD).write_text(

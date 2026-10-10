@@ -497,7 +497,14 @@ def main(argv: list[str] | None = None) -> int:
         # as a guard so dispatch can never silently fall through.
         print(f"draupnir {args.command}: not yet implemented.", file=sys.stderr)
         return 2
-    return handler(args)
+    # Slice 14: a handler that blows up is a failure (exit 1), never a
+    # usage error (exit 2) and never a silent crash. Exit 0 (ok) and
+    # exit 2 (usage/parse) semantics elsewhere are unchanged.
+    try:
+        return handler(args)
+    except Exception as exc:
+        print(f"draupnir {args.command}: error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

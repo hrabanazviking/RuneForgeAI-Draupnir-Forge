@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Union
@@ -152,6 +154,35 @@ class ProjectMemory:
             log.warning("Could not read %s: %s", path, exc)
             return ""
 
+    @staticmethod
+    def _atomic_write_text(path: Path, content: str) -> None:
+        """Write ``content`` to ``path`` atomically.
+
+        The content lands in a uniquely-named temp file in the same
+        directory (so the rename never crosses filesystems), is flushed
+        and fsynced to durable storage, then moved over the target with
+        :func:`os.replace` — a torn write can never leave a half-written
+        document behind. The temp file is cleaned up if anything fails.
+        """
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except BaseException:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
     def write_doc(self, name: str, content: str,
                   by_scribe: bool = False) -> Path:
         """Write a document into ``.mythis/``.
@@ -159,7 +190,8 @@ class ProjectMemory:
         The Scribe owns the canonical documents: writing one without
         ``by_scribe=True`` raises :class:`PermissionError`. The
         ``evidence/``, ``sessions/`` and ``logs/`` halls are free ground
-        for every role.
+        for every role. The write itself is atomic (temp file + fsync +
+        rename), so a crash mid-write never leaves a torn document.
 
         Raises:
             PermissionError: On a non-Scribe write to a canonical doc or
@@ -175,11 +207,12 @@ class ProjectMemory:
             zone = "free"
         else:
             zone = "reserved"
+        # All permission checks happen here, before any write begins.
         if zone != "free" and not by_scribe:
             raise PermissionError(
                 f"Only the Scribe may write {rel} (pass by_scribe=True)")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        self._atomic_write_text(path, content)
         return path
 
     # -- context compilation ------------------------------------------------

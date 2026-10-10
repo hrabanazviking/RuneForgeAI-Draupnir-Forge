@@ -13,7 +13,9 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from draupnir_forge import cli
 from draupnir_forge.cli import SUBCOMMANDS, build_parser, main
 
 
@@ -349,6 +351,32 @@ class TestEventsSinceTime(unittest.TestCase):
             ])
             self.assertEqual(code, 2)
             self.assertIn("ISO-8601", err)
+
+
+class TestFailureExitCode(unittest.TestCase):
+    """Slice 14: a crashing handler is exit 1 (failure), not 0 or 2."""
+
+    def _boom(self, args):
+        raise RuntimeError("boom")
+
+    def test_handler_exception_exits_1(self):
+        with mock.patch.dict(cli._HANDLERS, {"metrics": self._boom}):
+            code, _out, err = run_cli(["metrics"])
+        self.assertEqual(code, 1)
+        self.assertIn("draupnir metrics: error: boom", err)
+
+    def test_handler_exception_names_the_subcommand(self):
+        with mock.patch.dict(cli._HANDLERS, {"status": self._boom}):
+            code, _out, err = run_cli(["status"])
+        self.assertEqual(code, 1)
+        self.assertIn("draupnir status: error: boom", err)
+
+    def test_ok_and_usage_codes_unchanged(self):
+        with TemporaryDirectory() as tmp:
+            code, _out, _err = run_cli(["--project-dir", tmp, "metrics"])
+            self.assertEqual(code, 0)  # ok stays 0
+        code, _out, _err = run_cli(["frobnicate"])
+        self.assertEqual(code, 2)  # usage stays 2
 
 
 if __name__ == "__main__":
