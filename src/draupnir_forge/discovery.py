@@ -78,6 +78,10 @@ _LINE_COUNT_CHUNK = 65536
 _HUGE_LINES = 5000
 _BLOB_BYTES = 1_000_000
 
+#: Files larger than this are skipped by discovery: they never enter the
+#: inventory and never get their lines counted.
+max_file_bytes = 5 * 1024 * 1024  # 5 MiB
+
 
 def _extension_is_binary(rel_path: str) -> bool:
     ext = os.path.splitext(rel_path)[1].lower()
@@ -153,6 +157,8 @@ class DiscoveryReport:
         # Huginn scouts the land: the raw file inventory, reused by
         # every section of the report.
         self._files: Optional[List[Tuple[str, str, int]]] = None
+        # Rel paths of files skipped for exceeding max_file_bytes.
+        self._skipped: List[str] = []
 
     # -- inventory -------------------------------------------------------
 
@@ -171,10 +177,24 @@ class DiscoveryReport:
                             (rel, _language_of(rel), int(getattr(item, "size", 0) or 0))
                         )
                 entries.sort(key=lambda e: e[0])
-                self._files = entries
             else:
-                self._files = _walk_files(self.project_dir)
+                entries = _walk_files(self.project_dir)
+            # The size cap applies to both walked and charted entries:
+            # oversized files never enter the inventory.
+            self._skipped = sorted(
+                rel for rel, _language, size in entries
+                if size > max_file_bytes
+            )
+            self._files = [
+                (rel, language, size) for rel, language, size in entries
+                if size <= max_file_bytes
+            ]
         return self._files
+
+    def skipped_files(self) -> List[str]:
+        """Rel paths of files skipped for exceeding ``max_file_bytes``."""
+        self._inventory()
+        return list(self._skipped)
 
     def _paths(self) -> List[str]:
         return [rel for rel, _, _ in self._inventory()]
@@ -453,14 +473,31 @@ class DiscoveryReport:
         return "\n".join(lines)
 
     def write(self) -> Dict[str, Any]:
-        """Write ``.mythis/DISCOVERY_REPORT.md``; return report path + risks."""
+        """Write ``.mythis/DISCOVERY_REPORT.md`` atomically.
+
+        The report goes to a ``.tmp`` sibling first, is flushed and
+        fsynced to durable storage, then swapped into place with
+        ``os.replace`` — a crash mid-write never leaves a half-written
+        canonical report, and no ``.tmp`` residue survives.
+
+        Returns the same contract as before: ``{"report_path": ..., "risks": ...}``.
+        """
         mythis = self.project_dir / MYTHIS_DIR
         mythis.mkdir(parents=True, exist_ok=True)
         report_path = mythis / REPORT_FILE
+        tmp_path = report_path.with_name(report_path.name + ".tmp")
         try:
-            report_path.write_text(self.generate(), encoding="utf-8")
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                handle.write(self.generate())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, report_path)
         except OSError as exc:
             _LOG.warning("discovery report write failed: %s", exc)
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass  # best-effort cleanup; the canonical report is untouched
         return {"report_path": str(report_path), "risks": self.risks()}
 
 

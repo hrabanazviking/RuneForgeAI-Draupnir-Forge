@@ -131,6 +131,55 @@ class TaskGraph:
         return [self._tasks[tid] for tid in self._order
                 if task_id in self._tasks[tid].depends_on]
 
+    def critical_path(self) -> List[str]:
+        """Longest dependency chain by task count, as an id list.
+
+        Each step follows a ``depends_on`` edge in execution order: the
+        list runs from the dependency root (the task with no deps) to the
+        final dependent. Ties resolve to the chain whose tasks come first
+        in insertion order. An empty graph yields ``[]``; dependency
+        cycles never cause infinite recursion (cycle-closing edges are
+        skipped).
+        """
+        if not self._tasks:
+            return []
+        # children[tid] = tasks that directly depend on tid, insertion order.
+        children: Dict[str, List[str]] = {tid: [] for tid in self._order}
+        for tid in self._order:
+            for dep in self._tasks[tid].depends_on:
+                if dep in children:
+                    children[dep].append(tid)
+        memo: Dict[str, List[str]] = {}
+
+        def longest(node: str, seen: frozenset) -> List[str]:
+            """Longest simple chain starting at ``node``."""
+            cached = memo.get(node)
+            if cached is not None and not (set(cached[1:]) & seen):
+                # Safe to reuse only when the cached chain never revisits
+                # an ancestor in the current path.
+                return cached
+            best = [node]
+            clean = True  # no cycle-closing edge was skipped
+            for child in children[node]:
+                if child in seen:
+                    clean = False
+                    continue
+                candidate = [node] + longest(child, seen | {child})
+                if len(candidate) > len(best):
+                    best = candidate
+            # Ties keep the first candidate found: children iterate in
+            # insertion order, so the earliest chain wins.
+            if clean:
+                memo[node] = best
+            return best
+
+        best: List[str] = []
+        for task_id in self._order:
+            candidate = longest(task_id, frozenset({task_id}))
+            if len(candidate) > len(best):
+                best = candidate
+        return best
+
     # -- mutations ---------------------------------------------------
 
     def _set_status(self, task_id: str, status: str) -> ForgeTask:
@@ -158,9 +207,14 @@ class TaskGraph:
         be unique). Persists.
 
         Raises:
-            ValueError: On a duplicate task id.
+            ValueError: On a duplicate task id, or when the spec's
+                ``title`` is missing/blank.
         """
         data = dict(spec)
+        title = data.get("title")
+        if not str(title or "").strip():
+            raise ValueError(
+                "Task spec requires a non-blank 'title'")
         task_id = str(data.get("task_id") or "").strip()
         if not task_id:
             task_id = self._next_task_id()
@@ -254,6 +308,41 @@ class TaskGraph:
         if cycle:
             raise ValueError(
                 "Dependency cycle detected: " + " -> ".join(cycle))
+
+    def find_cycles(self) -> List[List[str]]:
+        """Return ALL dependency cycles as task-id path lists.
+
+        Each cycle is a closed id path (first id == last id), e.g.
+        ``["T-001", "T-002", "T-001"]``, following ``depends_on`` edges.
+        Enumeration runs over every node so distinct cycles sharing no
+        node all surface; an acyclic graph yields ``[]``.
+
+        Unknown dependencies (a :meth:`validate` concern, not a cycle)
+        are ignored here.
+        """
+        index = {tid: i for i, tid in enumerate(self._order)}
+        cycles: List[List[str]] = []
+        for start in self._order:
+            start_idx = index[start]
+            stack: List[str] = [start]
+            in_stack = {start}
+
+            def visit(node: str) -> None:
+                for dep in self._tasks[node].depends_on:
+                    if dep not in self._tasks:
+                        continue
+                    if dep == start:
+                        cycles.append(stack[:] + [start])
+                    elif (dep not in in_stack
+                          and index[dep] > start_idx):
+                        in_stack.add(dep)
+                        stack.append(dep)
+                        visit(dep)
+                        stack.pop()
+                        in_stack.discard(dep)
+
+            visit(start)
+        return cycles
 
     def _find_cycle(self) -> List[str]:
         """Return one dependency cycle as an id path, or [] if acyclic."""
