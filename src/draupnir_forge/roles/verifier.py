@@ -39,6 +39,33 @@ class GateResult:
     evidence: str      # human-readable account of what was checked
     skipped: bool = False
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the gate outcome to a plain dict."""
+        return {
+            "gate": self.gate,
+            "passed": self.passed,
+            "evidence": self.evidence,
+            "skipped": self.skipped,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GateResult":
+        """Rebuild a GateResult from a dict.
+
+        Unknown keys are tolerated (ignored); missing keys fall back to
+        sensible defaults. Never raises on a dict-shaped payload.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"GateResult.from_dict requires a dict, got "
+                f"{type(data).__name__}")
+        return cls(
+            gate=str(data.get("gate", "")),
+            passed=bool(data.get("passed", False)),
+            evidence=str(data.get("evidence", "")),
+            skipped=bool(data.get("skipped", False)),
+        )
+
 
 @dataclass
 class Verdict:

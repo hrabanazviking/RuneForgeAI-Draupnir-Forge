@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from .roadmap import TaskGraph
 
 # Subcommands reserved by the roadmap. Slice 4 implements their handlers.
 # Declared here so `draupnir <cmd> --help` already resolves.
@@ -215,13 +216,35 @@ def _depends_of(task: dict) -> str:
         return ""
 
 
+def _cmd_roadmap_validate(root: Path) -> int:
+    """Validate the roadmap's dependency graph through TaskGraph. Exit 0/2.
+
+    Prints "roadmap valid (N tasks)" on success; the validation flaw on
+    failure (the ValueError is caught here so the flaw lands on exit 2
+    rather than main()'s generic handler exit 1).
+    """
+    graph = TaskGraph(root)
+    try:
+        graph.validate()
+    except ValueError as exc:
+        print(f"roadmap invalid: {exc}", file=sys.stderr)
+        return 2
+    print(f"roadmap valid ({len(graph.task_ids())} tasks)")
+    return 0
+
+
 def cmd_roadmap(args: argparse.Namespace) -> int:
     """Print the task table from .mythis/roadmap.json. Exit 0/2.
 
     Slice 32: the table carries ``ID STATUS TITLE`` plus dependency
     info, and tolerates both planner-shaped tasks (``task_id``) and
     hand-written ones (``id``/``slice``).
+
+    ``--validate``: load the roadmap through TaskGraph and run
+    ``validate()`` instead of printing the table.
     """
+    if getattr(args, "validate", False):
+        return _cmd_roadmap_validate(_project_root(args))
     roadmap_path = _project_root(args) / _MYTHIS_DIR / _ROADMAP_FILE
     if not roadmap_path.is_file():
         print("no roadmap yet")
@@ -479,6 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     parsers["events"].add_argument(
         "--since-time", default=None, metavar="ISO-8601",
         help="Only show events at or after this ISO-8601 timestamp.",
+    )
+    parsers["roadmap"].add_argument(
+        "--validate", action="store_true",
+        help="Validate the dependency graph; print the flaw instead of "
+             "the task table.",
     )
     return parser
 

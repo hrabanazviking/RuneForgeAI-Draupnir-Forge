@@ -120,7 +120,8 @@ def _emit_regrounded(project_dir: Path, payload: Dict[str, Any]) -> None:
         log.warning("Could not emit PROJECT_REGROUNDED: %s", exc)
 
 
-def reground(project_dir: Union[str, Path]) -> Dict[str, Any]:
+def reground(project_dir: Union[str, Path],
+             dry_run: bool = False) -> Dict[str, Any]:
     """Re-ground the Forge's picture of the project. Never raises.
 
     Re-runs the Cartographer, diffs the fresh chart against the stored
@@ -129,11 +130,20 @@ def reground(project_dir: Union[str, Path]) -> Dict[str, Any]:
 
     Args:
         project_dir: Root of the forge project holding ``.mythis/``.
+        dry_run: When True, compute the would-change plan without
+            writing any file or emitting events.
 
     Returns:
         ``{"regrounded": True, "added_files": [...], "removed_files":
         [...], "drift": [finding dicts], "stale_tasks": [task ids],
         "needs_architect": bool}``.
+
+        With ``dry_run=True`` the shape is ``{"dry_run": True,
+        "changed": bool, "stale": [task ids], "stale_tasks": [task ids],
+        "added_files": [...], "removed_files": [...], "drift":
+        [finding dicts], "needs_architect": bool}`` — ``"stale"`` holds
+        the ids of the tasks that *would* be marked stale, and
+        ``"changed"`` is True when the run would change anything.
     """
     root = Path(project_dir)
     added_files: List[str] = []
@@ -153,7 +163,8 @@ def reground(project_dir: Union[str, Path]) -> Dict[str, Any]:
         added_files = sorted(fresh - old)
         removed_files = sorted(old - fresh)
 
-    # 2. Validate every roadmap task; annotate the stale ones.
+    # 2. Validate every roadmap task; annotate the stale ones (a dry run
+    # only collects the ids, never writes the notes).
     try:
         graph = TaskGraph(root)
         for task_id in graph.task_ids():
@@ -163,7 +174,8 @@ def reground(project_dir: Union[str, Path]) -> Dict[str, Any]:
                 continue
             reason = _validate_task(root, task)
             if reason:
-                _mark_stale(graph, task_id, reason)
+                if not dry_run:
+                    _mark_stale(graph, task_id, reason)
                 stale_tasks.append(task_id)
     except Exception as exc:
         log.warning("Roadmap validation failed: %s", exc)
@@ -176,12 +188,26 @@ def reground(project_dir: Union[str, Path]) -> Dict[str, Any]:
         drift = []
 
     needs_architect = any(f.severity == SEVERITY_HIGH for f in drift)
+    drift_dicts = [f.to_dict() for f in drift]
+
+    if dry_run:
+        # The plan only — no file is written and no event is emitted.
+        return {
+            "dry_run": True,
+            "changed": bool(stale_tasks),
+            "stale": list(stale_tasks),
+            "stale_tasks": list(stale_tasks),
+            "added_files": added_files,
+            "removed_files": removed_files,
+            "drift": drift_dicts,
+            "needs_architect": needs_architect,
+        }
 
     result: Dict[str, Any] = {
         "regrounded": True,
         "added_files": added_files,
         "removed_files": removed_files,
-        "drift": [f.to_dict() for f in drift],
+        "drift": drift_dicts,
         "stale_tasks": stale_tasks,
         "needs_architect": needs_architect,
     }

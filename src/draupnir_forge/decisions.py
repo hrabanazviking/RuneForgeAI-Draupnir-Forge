@@ -148,12 +148,28 @@ class DecisionLedger:
         consequences: str = "",
         role: str = "",
     ) -> Path:
-        """Append a decision entry; return the ledger path."""
+        """Append a decision entry; return the ledger path.
+
+        Raises:
+            ValueError: If ``decision`` is empty or whitespace. The
+                check happens before the ledger file is touched.
+        An identical decision (after stripping) to the most recent
+        entry is not appended again; the ledger path is returned
+        unchanged so retries do not spam the ledger.
+        """
+        clean = str(decision).strip()
+        if not clean:
+            raise ValueError("decision must not be empty or whitespace")
+        prior = self.entries()
+        if prior and prior[-1].get("decision", "") == clean:
+            _LOG.info("Decision already recorded; skipping duplicate: %s",
+                      clean)
+            return self.path
         alt_list = [str(a) for a in (alternatives or []) if str(a)]
         alt_text = "; ".join(alt_list) if alt_list else "none recorded"
         revisit = str(consequences) or "none specified"
         entry = (
-            f"## {_utc_now()} — {decision}\n"
+            f"## {_utc_now()} — {clean}\n"
             f"- Role: {role}\n"
             f"- Reason: {reason}\n"
             f"- Alternatives considered: {alt_text}\n"
@@ -170,7 +186,7 @@ class DecisionLedger:
                 handle.write(entry)
         except OSError as exc:
             _LOG.warning("decision ledger write failed: %s", exc)
-        _LOG.info("Decision recorded: %s", decision)
+        _LOG.info("Decision recorded: %s", clean)
         return self.path
 
     # -- reading ---------------------------------------------------------
