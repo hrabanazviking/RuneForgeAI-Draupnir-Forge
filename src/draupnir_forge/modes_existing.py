@@ -48,6 +48,13 @@ class NotMappedError(RuntimeError):
     """Raised when worker/roadmap work is attempted before mapping."""
 
 
+def _require_goal(goal_text: str) -> str:
+    """Validate a goal string; an empty goal can never scaffold meaning."""
+    if not (goal_text or "").strip():
+        raise ValueError("goal must be a non-empty string")
+    return goal_text
+
+
 class ExistingRepoMode:
     """Map an existing repository, then plan changes against a goal."""
 
@@ -76,9 +83,15 @@ class ExistingRepoMode:
         """The map-before-modifying law: no map file, no worker tasks."""
         return os.path.isfile(self.domain_map_path)
 
-    def detect_tests(self) -> Optional[List[str]]:
-        """Detect the command that runs this repo's test suite."""
-        return tester_mod.detect_command(self.project_dir)
+    def detect_tests(self) -> List[str]:
+        """Detect the command that runs this repo's test suite.
+
+        Always returns a list: an empty list when no test command can be
+        found, never ``None`` — callers should not need to null-check a
+        detection result.
+        """
+        command = tester_mod.detect_command(self.project_dir)
+        return list(command) if command else []
 
     def inventory_docs(self) -> List[str]:
         """Inventory human docs: README + docs/*.md (repo-relative)."""
@@ -256,7 +269,10 @@ class ExistingRepoMode:
         Raises:
             NotMappedError: when the domain map does not exist yet —
                 worker-facing tasks must never be created pre-map.
+            ValueError: when ``goal_text`` is empty or whitespace-only —
+                an empty goal would scaffold a meaningless roadmap.
         """
+        _require_goal(goal_text)
         if not self.ready_for_worker():
             raise NotMappedError(
                 "map before modifying: run map_repository() first")
@@ -294,8 +310,14 @@ class ExistingRepoMode:
 
         Returns ``{"domain_map", "risks", "doc_gaps", "roadmap_path",
         "ready"}``. Never raises: failures surface as ``ready=False``.
+
+        Raises:
+            ValueError: when ``goal_text`` is empty or whitespace-only
+                (raised before any work begins, so it is not swallowed
+                into a ``ready=False`` result).
         """
-        goal_text = (goal_text or "").strip() or "Understand this repository."
+        _require_goal(goal_text)
+        goal_text = goal_text.strip() or "Understand this repository."
         try:
             # The Skald hears the goal first, so the roadmap serves intent.
             skald_mod.interpret(goal_text)

@@ -204,6 +204,47 @@ class FailureRecord:
     detail: str = ""
     attempt: int = 1
 
+    def to_dict(self) -> dict:
+        """Serialize this record to a plain JSON-safe dict.
+
+        ``failure_class`` is stored as its enum value string so the
+        record can cross a process boundary and be rebuilt intact.
+        """
+        return {
+            "failure_class": self.failure_class.value,
+            "task_id": self.task_id,
+            "ts": self.ts,
+            "detail": self.detail,
+            "attempt": self.attempt,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "FailureRecord":
+        """Rebuild a record from :meth:`to_dict` output.
+
+        An unrecognized ``failure_class`` string degrades to
+        ``FailureClass.UNKNOWN`` rather than raising, so failure memory
+        written by a newer (or foreign) forge version still loads.
+        """
+        raw = data.get("failure_class", FailureClass.UNKNOWN.value)
+        if isinstance(raw, FailureClass):
+            failure_class = raw
+        else:
+            try:
+                failure_class = FailureClass(str(raw))
+            except ValueError:
+                try:
+                    failure_class = FailureClass[str(raw).upper()]
+                except (KeyError, AttributeError):
+                    failure_class = FailureClass.UNKNOWN
+        return cls(
+            failure_class=failure_class,
+            task_id=str(data.get("task_id", "")),
+            ts=float(data.get("ts", 0.0)),
+            detail=str(data.get("detail", "")),
+            attempt=int(data.get("attempt", 1)),
+        )
+
 
 # Escalation ladder: how many times the same task has failed with the same
 # class -> who should take the next look. Ordered so the first threshold met

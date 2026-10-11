@@ -36,12 +36,19 @@ _STOPWORDS = frozenset({
 
 _FALLBACK_PACKAGE = "forge_app"
 
+# Longest package name we will ever mint: absurd goals must not produce
+# absurd (or import-breaking) package directories.
+_MAX_PACKAGE_LEN = 64
+
 
 def slugify_package_name(goal_text: str) -> str:
     """Coin a snake_case package name from free-form goal text.
 
     Takes up to three meaningful words (stopwords and filler dropped),
-    falling back to ``forge_app`` when nothing usable remains.
+    falling back to ``forge_app`` when nothing usable remains. The
+    result is always a valid Python identifier of at most 64
+    characters: leading digits gain the ``pkg_`` prefix (as before)
+    and truncation never leaves a trailing underscore.
     """
     words = re.findall(r"[a-zA-Z][a-zA-Z0-9]*", (goal_text or "").lower())
     chosen = [w for w in words if w not in _STOPWORDS][:3]
@@ -50,6 +57,10 @@ def slugify_package_name(goal_text: str) -> str:
     name = "_".join(chosen)
     if name[0].isdigit():
         name = "pkg_" + name
+    if len(name) > _MAX_PACKAGE_LEN:
+        name = name[:_MAX_PACKAGE_LEN].rstrip("_")
+        if not name:
+            return _FALLBACK_PACKAGE
     return name
 
 

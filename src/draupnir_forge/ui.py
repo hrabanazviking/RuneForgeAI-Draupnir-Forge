@@ -15,6 +15,7 @@ slice or by hand.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 __all__ = ["ProgressView"]
@@ -31,6 +32,32 @@ _GOAL_MAX = 60
 _COMPLETED_MAX = 6
 _QUEUED_MAX = 4
 _LINE_MAX = 72
+
+# ANSI escape sequences a hostile task title could smuggle in:
+# CSI sequences (colors, cursor moves, clears), OSC hyperlinks/titles,
+# and single-character ESC commands (charset switches, etc.).
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;:?]*[a-zA-Z]"      # CSI: \x1b[31m, \x1b[2K, ...
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)"  # OSC: \x1b]8;;url\x1b\\ / \x07
+    r"|\x1b[()][0-9A-B]"            # charset selection: \x1b(B ...
+    r"|\x1b[78=>M^_]"               # single-char ESC commands
+)
+
+
+def _sanitize(text: str) -> str:
+    """Strip terminal-hostile characters from operator-facing text.
+
+    Removes ANSI escape sequences (a task title must never be able to
+    rewrite the operator's terminal) and C0/C1 control characters
+    (including DEL and newlines, so one value can never break the
+    panel's line layout). Printable Unicode passes through untouched.
+    """
+    text = _ANSI_RE.sub("", text)
+    return "".join(
+        ch
+        for ch in text
+        if not (ord(ch) < 0x20 or 0x7F <= ord(ch) < 0xA0)
+    )
 
 
 def _as_str(value: Any, default: str = "") -> str:
@@ -56,11 +83,11 @@ def _task_title(task: Dict[str, Any]) -> str:
     for key in ("title", "name"):
         value = task.get(key)
         if value:
-            return _truncate(_as_str(value), _LINE_MAX)
+            return _truncate(_sanitize(_as_str(value)), _LINE_MAX)
     for key in ("task_id", "id", "slice"):
         value = task.get(key)
         if value:
-            return _truncate(f"task {_as_str(value)}", _LINE_MAX)
+            return _truncate(_sanitize(f"task {_as_str(value)}"), _LINE_MAX)
     return "(untitled)"
 
 
@@ -69,7 +96,7 @@ def _task_status(task: Dict[str, Any]) -> str:
     raw = task.get("status")
     if raw is None:
         raw = task.get("state", "")
-    return _as_str(raw).strip().lower()
+    return _sanitize(_as_str(raw)).strip().lower()
 
 
 def _bucket(status: str) -> str:
@@ -141,8 +168,8 @@ class ProgressView:
         total = len(tasks)
         percent = (len(done) * 100 // total) if total else 0
 
-        goal = _truncate(_as_str(state.get("goal")), _GOAL_MAX)
-        phase = _as_str(state.get("phase"), "UNKNOWN")
+        goal = _truncate(_sanitize(_as_str(state.get("goal"))), _GOAL_MAX)
+        phase = _sanitize(_as_str(state.get("phase"), "UNKNOWN"))
         current = _current_task(tasks)
         objective = _task_title(current) if current is not None else "—"
         decisions = _decisions_needed(state)
@@ -185,7 +212,7 @@ class ProgressView:
             lines.append("None")
         lines.append("")
         lines.append("System health:")
-        lines.append(_as_str(health, "Stable"))
+        lines.append(_sanitize(_as_str(health, "Stable")))
         return "\n".join(lines)
 
     @staticmethod
@@ -201,7 +228,7 @@ class ProgressView:
         buckets = [_bucket(_task_status(t)) for t in tasks]
         total = len(tasks)
         percent = (buckets.count("done") * 100 // total) if total else 0
-        phase = _as_str(state.get("phase"), "UNKNOWN")
+        phase = _sanitize(_as_str(state.get("phase"), "UNKNOWN"))
         current = _current_task(tasks)
         objective = _task_title(current) if current is not None else "—"
         objective = objective.replace("\n", " ")
