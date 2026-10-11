@@ -1,5 +1,38 @@
 # CHANGELOG — RuneForgeAI-Draupnir-Forge
 
+## 2026-10-11 — Dawn forge: 20 slices ("The Weaving of the Wyrd-Threads")
+
+Inner-communication run: honest handoffs between subsystems — public graph
+introspection, bounded discovery, serialized failure/audit memory, sanitized
+operator surfaces, validated inputs at every seam (HEAD c67ae30).
+Suite: **876 passed, 0 failed** (`PYTHONPATH=src python3 -m pytest tests -q`).
+Pushed and verified: local HEAD == `git ls-remote origin HEAD`.
+
+Slices:
+1. roadmap/find-cycles — public `TaskGraph.find_cycles()` enumerates all dependency cycles
+2. roadmap/critical-path — `critical_path()` returns the longest dependency chain (cycle-safe)
+3. roadmap/add-task-title-required — `add_task()` raises ValueError on blank titles
+4. discovery/file-size-cap — files over `max_file_bytes` (5 MiB) skipped and listed
+5. discovery/write-atomic — DISCOVERY_REPORT.md written via tmp + fsync + replace
+6. failures/record-serialize — `FailureRecord.to_dict()`/`from_dict()` round-trip (unknown class → UNKNOWN)
+7. ui/control-char-sanitize — ANSI/C0/C1 stripped from titles, statuses, goal, health in both renderers
+8. modes_new/slug-max-length — `slugify_package_name()` capped at 64 chars, always a valid identifier
+9. modes_existing/empty-goal — `build_roadmap("")`/`run("")` raise ValueError naming "goal"
+10. modes_existing/detect-tests-nonnull — `detect_tests()` returns `List[str]`, never None
+11. decisions/record-validation — `record()` raises ValueError on empty decision text
+12. decisions/dedupe — identical consecutive decisions are not appended twice
+13. reground/dry-run — `reground(..., dry_run=True)` returns the plan, writes nothing
+14. cli/roadmap-validate — `draupnir roadmap --validate` → exit 0/2 with flaw message
+15. verifier/gateresult-serialize — `GateResult.to_dict()`/`from_dict()` round-trip
+16. auditor/finding-serialize — `Finding.from_dict()` round-trips `to_dict()` (never raises)
+17. tester/evidence-atomic — test evidence logs written atomically
+18. report/task-stats — FinalReport carries an "N of M tasks complete" line
+19. archdocs/missing-keys — `render_architecture()`/`render_interfaces()` raise ValueError on missing keys
+20. scribe/roadmap-status-validation — unknown status raises ValueError instead of silent uncheck
+
+Note: slice 19 intentionally replaced two old test_archdocs.py assertions
+(empty-arch silent stub → now ValueError); tests updated to the new contract.
+
 ## 2026-10-10 — Dusk forge: 20 slices ("The Hardening of the Hearth")
 
 Second-wave hardening run on top of the completed 50-slice roadmap (HEAD 482401c).
