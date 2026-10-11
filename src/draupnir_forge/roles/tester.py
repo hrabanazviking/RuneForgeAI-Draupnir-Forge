@@ -276,7 +276,21 @@ def write_evidence_log(
             f"# counts: {counts}\n"
             f"# {'-' * 60}\n"
         )
-        path.write_text(header + (full_output or ""), encoding="utf-8")
+        # Atomic publish: write + fsync a temp sibling, then os.replace.
+        # A crash mid-write leaves at most a .tmp file; the canonical
+        # .log path is never half-written.
+        tmp_path = evidence_dir / f"{ts}.{os.getpid()}.log.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                handle.write(header + (full_output or ""))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
         return str(path)
     except Exception as exc:
         log.warning("Could not write test evidence log: %s", exc)

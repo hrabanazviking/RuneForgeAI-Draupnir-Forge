@@ -60,10 +60,11 @@ class TestRenderArchitecture(unittest.TestCase):
         self.assertIn("| `draupnir_forge.roles.cartographer` | `map_repo`, `DomainMap` |", text)
 
     def test_empty_arch_renders(self):
-        text = render_architecture({})
-        self.assertIn("```mermaid", text)
-        self.assertIn("no inter-domain dependencies", text)
-        self.assertIn("| _none_ | _none_ | _none_ | _none_ |", text)
+        # Slice 19 (dawn 2026-10-11): empty arch raises instead of
+        # rendering a silent stub diagram.
+        with self.assertRaises(ValueError) as ctx:
+            render_architecture({})
+        self.assertIn("domains", str(ctx.exception))
 
     def test_no_external_dependency_edges_leak(self):
         arch = dict(SAMPLE_ARCH, dependency_direction={"roles": ["ghost"]})
@@ -81,8 +82,10 @@ class TestRenderInterfaces(unittest.TestCase):
         self.assertIn("## `draupnir_forge.tools`", text)
 
     def test_empty_interfaces(self):
-        text = render_interfaces({})
-        self.assertIn("_No interfaces recorded._", text)
+        # Slice 19 (dawn 2026-10-11): missing interfaces raise ValueError.
+        with self.assertRaises(ValueError) as ctx:
+            render_interfaces({})
+        self.assertIn("interfaces", str(ctx.exception))
 
 
 class TestRenderInvariants(unittest.TestCase):

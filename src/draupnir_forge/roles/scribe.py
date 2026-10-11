@@ -128,10 +128,19 @@ def update_roadmap_status(project_dir: str, task_id: str, status: str) -> Path:
     Flips the check-box marker of the first line mentioning the task id.
     If the task is not listed yet, a line is appended. Returns the
     roadmap path.
+
+    Raises ValueError when ``status`` is not a known status word — a
+    typo'd status must never silently map to the "pending" marker.
     """
     path = _doc_path(project_dir, ROADMAP_FILE)
     path.parent.mkdir(parents=True, exist_ok=True)
-    marker = _STATUS_MARKERS.get(str(status).strip().lower(), " ")
+    status_key = str(status).strip().lower()
+    if status_key not in _STATUS_MARKERS:
+        valid = ", ".join(sorted(_STATUS_MARKERS))
+        raise ValueError(
+            f"unknown roadmap status {status!r}; valid statuses: {valid}"
+        )
+    marker = _STATUS_MARKERS[status_key]
     task_id = str(task_id)
 
     text = _read_text(path)

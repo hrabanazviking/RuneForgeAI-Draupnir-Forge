@@ -69,6 +69,33 @@ class Finding:
             "message": self.message,
         }
 
+    @classmethod
+    def from_dict(cls, data: Any) -> "Finding":
+        """Rebuild a Finding from ``to_dict()`` output.
+
+        Missing optional keys get sensible defaults; unknown keys are
+        ignored. Never raises — malformed input yields a low-severity
+        advisory finding rather than crashing the caller.
+        """
+        if not isinstance(data, dict):
+            data = {}
+        severity = data.get("severity", "low")
+        if severity not in _SEVERITIES:
+            severity = "low"
+        line = data.get("line")
+        if line is not None and not isinstance(line, int):
+            try:
+                line = int(line)
+            except (TypeError, ValueError):
+                line = None
+        return cls(
+            severity=severity,
+            check=str(data.get("check", "")),
+            file=str(data.get("file", "")),
+            line=line,
+            message=str(data.get("message", "")),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Check configuration (YAML-driven, with safe fallbacks)

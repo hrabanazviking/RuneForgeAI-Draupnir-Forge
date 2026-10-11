@@ -14,18 +14,37 @@ Skald's verses are deterministic, so tests can pin them word for word.
       "dependency_direction": {domain: [domain, ...], ...},
     }
 
-Every renderer tolerates missing keys and empty lists.
+Every renderer tolerates missing keys and empty lists — except
+``render_architecture`` and ``render_interfaces``, which raise
+``ValueError`` naming the missing required keys (``domains`` /
+``interfaces``) rather than rendering a silently empty diagram.
 """
 
 from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 
 def _utc_stamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _require_keys(arch: Dict[str, Any], required: Sequence[str],
+                  caller: str) -> None:
+    """Raise ValueError naming the missing required keys.
+
+    Guards ``render_architecture`` / ``render_interfaces`` against a
+    malformed ``arch`` dict: a silently empty diagram is a lie the
+    operator should never be told.
+    """
+    missing = [key for key in required if not arch.get(key)]
+    if missing:
+        raise ValueError(
+            f"{caller}() missing required key(s): "
+            f"{', '.join(missing)}"
+        )
 
 
 def _domains(arch: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -92,7 +111,12 @@ def _mermaid_diagram(arch: Dict[str, Any]) -> str:
 
 
 def render_architecture(arch: Dict[str, Any]) -> str:
-    """Render the polished ARCHITECTURE.md: diagram + domain tables."""
+    """Render the polished ARCHITECTURE.md: diagram + domain tables.
+
+    Raises ValueError when the required ``domains`` key is missing or
+    empty — an empty diagram would silently mislead.
+    """
+    _require_keys(arch, ("domains",), "render_architecture")
     domains = _domains(arch)
     interfaces = _interfaces(arch)
     invariants = _invariants(arch)
@@ -160,7 +184,12 @@ def render_architecture(arch: Dict[str, Any]) -> str:
 
 
 def render_interfaces(arch: Dict[str, Any]) -> str:
-    """Render INTERFACES.md: one function/class table per module."""
+    """Render INTERFACES.md: one function/class table per module.
+
+    Raises ValueError when the required ``interfaces`` key is missing
+    or empty.
+    """
+    _require_keys(arch, ("interfaces",), "render_interfaces")
     interfaces = _interfaces(arch)
     lines = [
         "# Interfaces",
@@ -170,10 +199,6 @@ def render_interfaces(arch: Dict[str, Any]) -> str:
         "classes, everything else as functions.",
         "",
     ]
-    if not interfaces:
-        lines.append("_No interfaces recorded._")
-        lines.append("")
-        return "\n".join(lines)
     for iface in interfaces:
         module = str(iface.get("module", ""))
         symbols = [str(s) for s in (iface.get("functions") or [])]
